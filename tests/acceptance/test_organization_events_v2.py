@@ -1,17 +1,16 @@
 import copy
+from datetime import timedelta
+from urllib.parse import urlencode
+
 import pytest
 import pytz
-from sentry.utils.compat.mock import patch
-from datetime import timedelta
-
-from urllib.parse import urlencode
 from selenium.webdriver.common.keys import Keys
 
 from sentry.discover.models import DiscoverSavedQuery
 from sentry.testutils import AcceptanceTestCase, SnubaTestCase
+from sentry.testutils.helpers.datetime import before_now, iso_format, timestamp_format
+from sentry.utils.compat.mock import patch
 from sentry.utils.samples import load_data
-from sentry.testutils.helpers.datetime import iso_format, before_now, timestamp_format
-
 
 FEATURE_NAMES = [
     "organizations:discover-basic",
@@ -57,8 +56,8 @@ def transactions_query(**kwargs):
 
 
 def generate_transaction(trace=None, span=None):
-    start_datetime = before_now(minutes=1, milliseconds=500)
     end_datetime = before_now(minutes=1)
+    start_datetime = end_datetime - timedelta(milliseconds=500)
     event_data = load_data(
         "transaction",
         timestamp=end_datetime,
@@ -168,9 +167,10 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
 
     @patch("django.utils.timezone.now")
     def test_all_events_query(self, mock_now):
-        mock_now.return_value = before_now().replace(tzinfo=pytz.utc)
-        min_ago = iso_format(before_now(minutes=1))
-        two_min_ago = iso_format(before_now(minutes=2))
+        now = before_now().replace(tzinfo=pytz.utc)
+        mock_now.return_value = now
+        min_ago = iso_format(now - timedelta(minutes=1))
+        two_min_ago = iso_format(now - timedelta(minutes=2))
         self.store_event(
             data={
                 "event_id": "a" * 32,
@@ -229,8 +229,9 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
 
     @patch("django.utils.timezone.now")
     def test_errors_query(self, mock_now):
-        mock_now.return_value = before_now().replace(tzinfo=pytz.utc)
-        min_ago = iso_format(before_now(minutes=1))
+        now = before_now().replace(tzinfo=pytz.utc)
+        mock_now.return_value = now
+        min_ago = iso_format(now - timedelta(minutes=1))
         self.store_event(
             data={
                 "event_id": "a" * 32,
@@ -289,7 +290,6 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
         event_data = generate_transaction()
 
         self.store_event(data=event_data, project_id=self.project.id, assert_no_errors=True)
-        self.wait_for_event_count(self.project.id, 1)
 
         with self.feature(FEATURE_NAMES):
             self.browser.get(self.result_path + "?" + transactions_query())
@@ -301,8 +301,9 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
 
     @patch("django.utils.timezone.now")
     def test_event_detail_view_from_all_events(self, mock_now):
-        mock_now.return_value = before_now().replace(tzinfo=pytz.utc)
-        min_ago = iso_format(before_now(minutes=1))
+        now = before_now().replace(tzinfo=pytz.utc)
+        mock_now.return_value = now
+        min_ago = iso_format(now - timedelta(minutes=1))
 
         event_data = load_data("python")
         event_data.update(
@@ -313,6 +314,13 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
                 "fingerprint": ["group-1"],
             }
         )
+        if "contexts" not in event_data:
+            event_data["contexts"] = {}
+        event_data["contexts"]["trace"] = {
+            "type": "trace",
+            "trace_id": "a" * 32,
+            "span_id": "b" * 16,
+        }
         self.store_event(data=event_data, project_id=self.project.id, assert_no_errors=False)
 
         with self.feature(FEATURE_NAMES):
@@ -331,16 +339,22 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
 
     @patch("django.utils.timezone.now")
     def test_event_detail_view_from_errors_view(self, mock_now):
-        mock_now.return_value = before_now().replace(tzinfo=pytz.utc)
+        now = before_now().replace(tzinfo=pytz.utc)
+        mock_now.return_value = now
 
         event_data = load_data("javascript")
         event_data.update(
             {
-                "timestamp": iso_format(before_now(minutes=5)),
+                "timestamp": iso_format(now - timedelta(minutes=5)),
                 "event_id": "d" * 32,
                 "fingerprint": ["group-1"],
             }
         )
+        event_data["contexts"]["trace"] = {
+            "type": "trace",
+            "trace_id": "a" * 32,
+            "span_id": "b" * 16,
+        }
         self.store_event(data=event_data, project_id=self.project.id)
         self.wait_for_event_count(self.project.id, 1)
 
@@ -376,7 +390,6 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
         child_event["transaction"] = "z-child-transaction"
         child_event["spans"] = child_event["spans"][0:3]
         self.store_event(data=child_event, project_id=self.project.id, assert_no_errors=True)
-        self.wait_for_event_count(self.project.id, 2)
 
         with self.feature(FEATURE_NAMES):
             # Get the list page
@@ -390,6 +403,11 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
             # View Event
             self.browser.elements('[data-test-id="view-event"]')[0].click()
             self.wait_until_loaded()
+
+            self.browser.snapshot("events-v2 - transactions event with auto-grouped spans")
+
+            # Expand auto-grouped spans
+            self.browser.elements('[data-test-id="span-row"]')[4].click()
 
             # Open a span detail so we can check the search by trace link.
             # Click on the 6th one as a missing instrumentation span is inserted.
@@ -453,13 +471,14 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
 
             # Fill out name and submit form.
             self.browser.element('input[name="query_name"]').send_keys(query_name)
-            self.browser.element('[aria-label="Save"]').click()
+            self.browser.element('[aria-label="Save for Org"]').click()
 
-            self.browser.wait_until(f'div[name="discover2-query-name"][value="{query_name}"]')
+            self.browser.wait_until(f'[data-test-id="discover2-query-name-{query_name}"]')
 
             # Page title should update.
-            title_input = self.browser.element('div[name="discover2-query-name"]')
-            assert title_input.get_attribute("value") == query_name
+            editable_text_label = self.browser.element('[data-test-id="editable-text-label"]').text
+
+        assert editable_text_label == query_name
         # Saved query should exist.
         assert DiscoverSavedQuery.objects.filter(name=query_name).exists()
 
@@ -480,16 +499,22 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
             self.browser.element(f'[data-test-id="card-{query.name}"]').click()
             self.wait_until_loaded()
 
-            input = self.browser.element('div[name="discover2-query-name"]')
-            input.click()
-            input.send_keys(Keys.END + "updated!")
+            self.browser.element('[data-test-id="editable-text-label"]').click()
+            self.browser.wait_until('[data-test-id="editable-text-input"]')
+
+            editable_text_input = self.browser.element('[data-test-id="editable-text-input"] input')
+            editable_text_input.click()
+            editable_text_input.send_keys(Keys.END + "updated!")
 
             # Move focus somewhere else to trigger a blur and update the query
             self.browser.element("table").click()
 
+            self.browser.wait_until('[data-test-id="editable-text-label"]')
+
             new_name = "Custom queryupdated!"
-            new_card_selector = f'div[name="discover2-query-name"][value="{new_name}"]'
-            self.browser.wait_until(new_card_selector)
+            # new_card_selector = f'div[name="discover2-query-name"][value="{new_name}"]'
+            # self.browser.wait_until(new_card_selector)
+            self.browser.wait_until(f'[data-test-id="discover2-query-name-{new_name}"]')
 
         # Assert the name was updated.
         assert DiscoverSavedQuery.objects.filter(name=new_name).exists()
@@ -551,8 +576,9 @@ class OrganizationEventsV2Test(AcceptanceTestCase, SnubaTestCase):
     @pytest.mark.skip(reason="causing timeouts in github actions and travis")
     @patch("django.utils.timezone.now")
     def test_drilldown_result(self, mock_now):
-        mock_now.return_value = before_now().replace(tzinfo=pytz.utc)
-        min_ago = iso_format(before_now(minutes=1))
+        now = before_now().replace(tzinfo=pytz.utc)
+        mock_now.return_value = now
+        min_ago = iso_format(now - timedelta(minutes=1))
         events = (
             ("a" * 32, "oh no", "group-1"),
             ("b" * 32, "oh no", "group-1"),

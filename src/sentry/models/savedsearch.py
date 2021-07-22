@@ -3,8 +3,8 @@ from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 
 from sentry.db.models import FlexibleForeignKey, Model, sane_repr
-from sentry.models.search_common import SearchType
 from sentry.db.models.fields.text import CharField
+from sentry.models.search_common import SearchType
 
 
 class SortOptions:
@@ -34,7 +34,7 @@ class SavedSearch(Model):
     A saved search query.
     """
 
-    __core__ = True
+    __include_in_export__ = True
     # TODO: Remove this column and rows where it's not null once we've
     # completely removed Sentry 9
     project = FlexibleForeignKey("sentry.Project", null=True)
@@ -86,7 +86,7 @@ class SavedSearchUserDefault(Model):
     Indicates the default saved search for a given user
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     savedsearch = FlexibleForeignKey("sentry.SavedSearch")
     project = FlexibleForeignKey("sentry.Project")

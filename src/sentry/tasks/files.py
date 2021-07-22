@@ -1,6 +1,8 @@
-from django.db import DatabaseError, IntegrityError, transaction
+from django.db import DatabaseError, IntegrityError, router
+
 from sentry.tasks.base import instrumented_task
 from sentry.tasks.deletion import MAX_RETRIES
+from sentry.utils.db import atomic_transaction
 
 
 @instrumented_task(
@@ -12,8 +14,8 @@ from sentry.tasks.deletion import MAX_RETRIES
     acks_late=True,
 )
 def delete_file(path, checksum, **kwargs):
-    from sentry.models.file import get_storage, FileBlob
     from sentry.app import locks
+    from sentry.models.file import FileBlob, get_storage
     from sentry.utils.retries import TimedRetryPolicy
 
     lock = locks.get(f"fileblob:upload:{checksum}", duration=60 * 10)
@@ -29,7 +31,7 @@ def delete_file(path, checksum, **kwargs):
     max_retries=MAX_RETRIES,
 )
 def delete_unreferenced_blobs(blob_ids):
-    from sentry.models import FileBlobIndex, FileBlob
+    from sentry.models import FileBlob, FileBlobIndex
 
     for blob_id in blob_ids:
         if FileBlobIndex.objects.filter(blob_id=blob_id).exists():
@@ -40,7 +42,7 @@ def delete_unreferenced_blobs(blob_ids):
             pass
         else:
             try:
-                with transaction.atomic():
+                with atomic_transaction(using=router.db_for_write(FileBlob)):
                     # Need to delete the record to ensure django hooks run.
                     blob.delete()
             except IntegrityError:

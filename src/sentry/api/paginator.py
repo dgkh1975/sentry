@@ -5,6 +5,7 @@ from datetime import datetime
 
 from django.core.exceptions import ObjectDoesNotExist
 from django.db import connections
+from django.db.models.functions import Lower
 from django.db.models.sql.datastructures import EmptyResultSet
 from django.utils import timezone
 
@@ -26,6 +27,7 @@ class BasePaginator:
     def __init__(
         self, queryset, order_by=None, max_limit=MAX_LIMIT, on_results=None, post_query_filter=None
     ):
+
         if order_by:
             if order_by.startswith("-"):
                 self.key, self.desc = order_by[1:], True
@@ -42,7 +44,7 @@ class BasePaginator:
     def _is_asc(self, is_prev):
         return (self.desc and is_prev) or not (self.desc or is_prev)
 
-    def _build_queryset(self, value, is_prev):
+    def build_queryset(self, value, is_prev):
         queryset = self.queryset
 
         # "asc" controls whether or not we need to change the ORDER BY to
@@ -60,11 +62,15 @@ class BasePaginator:
             if self.key in queryset.query.order_by:
                 if not asc:
                     index = queryset.query.order_by.index(self.key)
-                    queryset.query.order_by[index] = "-%s" % (queryset.query.order_by[index])
+                    new_order_by = list(queryset.query.order_by)
+                    new_order_by[index] = f"-{queryset.query.order_by[index]}"
+                    queryset.query.order_by = tuple(new_order_by)
             elif ("-%s" % self.key) in queryset.query.order_by:
                 if asc:
-                    index = queryset.query.order_by.index("-%s" % (self.key))
-                    queryset.query.order_by[index] = queryset.query.order_by[index][1:]
+                    index = queryset.query.order_by.index(f"-{self.key}")
+                    new_order_by = list(queryset.query.order_by)
+                    new_order_by[index] = queryset.query.order_by[index][1:]
+                    queryset.query.order_b = tuple(new_order_by)
             else:
                 if asc:
                     queryset = queryset.order_by(self.key)
@@ -108,7 +114,7 @@ class BasePaginator:
         else:
             cursor_value = 0
 
-        queryset = self._build_queryset(cursor_value, cursor.is_prev)
+        queryset = self.build_queryset(cursor_value, cursor.is_prev)
 
         # TODO(dcramer): this does not yet work correctly for ``is_prev`` when
         # the key is not unique
@@ -302,7 +308,7 @@ class MergingOffsetPaginator(OffsetPaginator):
         if offset < 0:
             raise BadPaginationError("Pagination offset cannot be negative")
 
-        primary_results = self.data_load_func(offset=offset, limit=limit)
+        primary_results = self.data_load_func(offset=offset, limit=self.max_limit)
 
         queryset = self.apply_to_queryset(self.queryset, primary_results)
 
@@ -486,17 +492,22 @@ class CombinedQuerysetIntermediary:
     is_empty = False
 
     def __init__(self, queryset, order_by):
+        assert isinstance(order_by, list), "order_by must be a list of keys/field names"
         self.queryset = queryset
         self.order_by = order_by
         try:
             instance = queryset[:1].get()
             self.instance_type = type(instance)
-            assert hasattr(
-                instance, self.order_by
-            ), f"Model of type {self.instance_type} does not have field {self.order_by}"
-            self.order_by_type = type(getattr(instance, self.order_by))
+            for key in self.order_by:
+                self._assert_has_field(instance, key)
+            self.order_by_type = type(getattr(instance, self.order_by[0]))
         except ObjectDoesNotExist:
             self.is_empty = True
+
+    def _assert_has_field(self, instance, field):
+        assert hasattr(
+            instance, field
+        ), f"Model of type {self.instance_type} does not have field {field}"
 
 
 class CombinedQuerysetPaginator:
@@ -519,10 +530,11 @@ class CombinedQuerysetPaginator:
     using_dates = False
     model_key_map = {}
 
-    def __init__(self, intermediaries, desc=False, on_results=None):
+    def __init__(self, intermediaries, desc=False, on_results=None, case_insensitive=False):
         self.desc = desc
         self.intermediaries = intermediaries
         self.on_results = on_results
+        self.case_insensitive = case_insensitive
         for intermediary in list(self.intermediaries):
             if intermediary.is_empty:
                 self.intermediaries.remove(intermediary)
@@ -544,7 +556,16 @@ class CombinedQuerysetPaginator:
             ), "When sorting by a date, it must be the key used on all intermediaries"
 
     def key_from_item(self, item):
-        return self.model_key_map.get(type(item))
+        return self.model_key_map.get(type(item))[0]
+
+    def _prep_value(self, item, key, for_prev):
+        value = getattr(item, key)
+        value_type = type(value)
+        if isinstance(value, float):
+            return math.floor(value) if self._is_asc(for_prev) else math.ceil(value)
+        elif value_type is str and self.case_insensitive:
+            return value.lower()
+        return value
 
     def get_item_key(self, item, for_prev=False):
         if self.using_dates:
@@ -552,11 +573,7 @@ class CombinedQuerysetPaginator:
                 self.multiplier * float(getattr(item, self.key_from_item(item)).strftime("%s.%f"))
             )
         else:
-            value = getattr(item, self.key_from_item(item))
-            value_type = type(value)
-            if value_type is float:
-                return math.floor(value) if self._is_asc(for_prev) else math.ceil(value)
-            return value
+            return self._prep_value(item, self.key_from_item(item), for_prev)
 
     def value_from_cursor(self, cursor):
         if self.using_dates:
@@ -565,8 +582,7 @@ class CombinedQuerysetPaginator:
             )
         else:
             value = cursor.value
-            value_type = type(value)
-            if value_type is float:
+            if isinstance(value, float):
                 return math.floor(value) if self._is_asc(cursor.is_prev) else math.ceil(value)
             return value
 
@@ -577,25 +593,42 @@ class CombinedQuerysetPaginator:
         asc = self._is_asc(is_prev)
         combined_querysets = list()
         for intermediary in self.intermediaries:
-            key = intermediary.order_by
+            key = intermediary.order_by[0]
             filters = {}
+            annotate = {}
+
+            if self.case_insensitive:
+                key = f"{key}_lower"
+                annotate[key] = Lower(intermediary.order_by[0])
 
             if asc:
-                order_by = key
-                filter_condition = "%s__gte" % key
+                filter_condition = f"{key}__gte"
             else:
-                order_by = "-%s" % key
-                filter_condition = "%s__lte" % key
+                filter_condition = f"{key}__lte"
 
             if value is not None:
                 filters[filter_condition] = value
 
-            queryset = intermediary.queryset.filter(**filters).order_by(order_by)[: (limit + extra)]
+            queryset = intermediary.queryset.annotate(**annotate).filter(**filters)
+            for key in intermediary.order_by:
+                if self.case_insensitive:
+                    key = f"{key}_lower"
+                if asc:
+                    queryset = queryset.order_by(key)
+                else:
+                    queryset = queryset.order_by(f"-{key}")
+
+            queryset = queryset[: (limit + extra)]
             combined_querysets += list(queryset)
 
         def _sort_combined_querysets(item):
-            key_value = self.get_item_key(item, is_prev)
-            return ((key_value, type(item).__name__),)
+            sort_keys = []
+            sort_keys.append(self.get_item_key(item, is_prev))
+            if len(self.model_key_map.get(type(item))) > 1:
+                for k in self.model_key_map.get(type(item))[1:]:
+                    sort_keys.append(k)
+            sort_keys.append(type(item).__name__)
+            return tuple(sort_keys)
 
         combined_querysets.sort(
             key=_sort_combined_querysets,

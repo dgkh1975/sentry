@@ -1,16 +1,17 @@
 from django.http import HttpResponse
+
 from sentry.integrations import (
-    IntegrationInstallation,
+    FeatureDescription,
     IntegrationFeatures,
+    IntegrationInstallation,
     IntegrationMetadata,
     IntegrationProvider,
-    FeatureDescription,
 )
-from sentry.shared_integrations.exceptions import IntegrationError
 from sentry.integrations.issues import IssueSyncMixin
 from sentry.mediators.plugins import Migrator
 from sentry.models import User
 from sentry.pipeline import PipelineView
+from sentry.shared_integrations.exceptions import IntegrationError
 
 
 class ExampleSetupView(PipelineView):
@@ -46,7 +47,7 @@ metadata = IntegrationMetadata(
     features=FEATURES,
     author="The Sentry Team",
     noun="example",
-    issue_url="https://github.com/getsentry/sentry/issues/new?assignees=&labels=Component:%20Integrations&template=bug_report.md&title=Integration%20Problem",
+    issue_url="https://github.com/getsentry/sentry/issues/new?assignees=&labels=Component:%20Integrations&template=bug.yml&title=Integration%20Problem",
     source_url="https://github.com/getsentry/sentry",
     aspects={},
 )

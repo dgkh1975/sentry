@@ -1,21 +1,17 @@
 import re
-
-import pytest
 import zipfile
-from sentry.utils.compat.mock import patch
-
 from io import BytesIO
 
-from django.core.urlresolvers import reverse
+import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.urls import reverse
 
 from sentry import eventstore
-from sentry.testutils import TransactionTestCase, RelayStoreHelper
 from sentry.models import File, ProjectDebugFile
-from sentry.testutils.helpers.datetime import iso_format, before_now
-
+from sentry.testutils import RelayStoreHelper, TransactionTestCase
+from sentry.testutils.helpers.datetime import before_now, iso_format
+from sentry.utils.compat.mock import patch
 from tests.symbolicator import get_fixture_path, insta_snapshot_stacktrace_data
-
 
 # IMPORTANT:
 # For these tests to run, write `symbolicator.enabled: true` into your
@@ -108,7 +104,8 @@ class SymbolicatorResolvingIntegrationTest(RelayStoreHelper, TransactionTestCase
         assert response.status_code == 201, response.content
         assert len(response.data) == 1
 
-        event = self.post_and_retrieve_event(REAL_RESOLVING_EVENT_DATA)
+        with self.feature({"organizations:images-loaded-v2": False}):
+            event = self.post_and_retrieve_event(REAL_RESOLVING_EVENT_DATA)
 
         assert event.data["culprit"] == "main"
         insta_snapshot_stacktrace_data(self, event.data)
@@ -126,7 +123,7 @@ class SymbolicatorResolvingIntegrationTest(RelayStoreHelper, TransactionTestCase
             file=file,
             object_name="crash.pdb",
             cpu_name="x86",
-            project=self.project,
+            project_id=self.project.id,
             debug_id="3249d99d-0c40-4931-8610-f4e4fb0b6936-1",
             code_id="5AB380779000",
         )
@@ -167,14 +164,16 @@ class SymbolicatorResolvingIntegrationTest(RelayStoreHelper, TransactionTestCase
             "timestamp": iso_format(before_now(seconds=1)),
         }
 
-        event = self.post_and_retrieve_event(event_data)
+        with self.feature({"organizations:images-loaded-v2": False}):
+            event = self.post_and_retrieve_event(event_data)
         assert event.data["culprit"] == "main"
         insta_snapshot_stacktrace_data(self, event.data)
 
     def test_missing_dsym(self):
         self.login_as(user=self.user)
 
-        event = self.post_and_retrieve_event(REAL_RESOLVING_EVENT_DATA)
+        with self.feature({"organizations:images-loaded-v2": False}):
+            event = self.post_and_retrieve_event(REAL_RESOLVING_EVENT_DATA)
         assert event.data["culprit"] == "unknown"
         insta_snapshot_stacktrace_data(self, event.data)
 
@@ -184,7 +183,8 @@ class SymbolicatorResolvingIntegrationTest(RelayStoreHelper, TransactionTestCase
         payload = dict(project=self.project.id, **REAL_RESOLVING_EVENT_DATA)
         del payload["debug_meta"]
 
-        event = self.post_and_retrieve_event(payload)
+        with self.feature({"organizations:images-loaded-v2": False}):
+            event = self.post_and_retrieve_event(payload)
         assert event.data["culprit"] == "unknown"
         insta_snapshot_stacktrace_data(self, event.data)
 
@@ -202,7 +202,7 @@ class SymbolicatorResolvingIntegrationTest(RelayStoreHelper, TransactionTestCase
             file=file,
             object_name="crash.pdb",
             cpu_name="x86",
-            project=self.project,
+            project_id=self.project.id,
             debug_id="3249d99d-0c40-4931-8610-f4e4fb0b6936-1",
             code_id="5AB380779000",
         )

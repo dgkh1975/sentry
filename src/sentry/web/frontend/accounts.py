@@ -4,20 +4,20 @@ from functools import partial, update_wrapper
 from django.contrib import messages
 from django.contrib.auth import authenticate
 from django.contrib.auth import login as login_user
-from django.core.urlresolvers import reverse
 from django.db import transaction
 from django.http import Http404, HttpResponse, HttpResponseRedirect
 from django.template.context_processors import csrf
+from django.urls import reverse
 from django.utils.translation import ugettext as _
 from django.views.decorators.cache import never_cache
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods
 
 from sentry.models import Authenticator, LostPasswordHash, NotificationSetting, Project, UserEmail
-from sentry.models.integration import ExternalProviders
 from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
 from sentry.security import capture_security_activity
 from sentry.signals import email_verified
+from sentry.types.integrations import ExternalProviders
 from sentry.utils import auth
 from sentry.web.decorators import login_required, set_referrer_policy, signed_auth_required
 from sentry.web.forms.accounts import ChangePasswordRecoverForm, RecoverPasswordForm
@@ -200,7 +200,7 @@ def confirm_email(request, user_id, hash):
         if not email.hash_is_valid():
             raise UserEmail.DoesNotExist
     except UserEmail.DoesNotExist:
-        if request.user.is_anonymous() or request.user.has_unverified_emails():
+        if request.user.is_anonymous or request.user.has_unverified_emails():
             msg = _(
                 "There was an error confirming your email. Please try again or "
                 "visit your Account Settings to resend the verification email."

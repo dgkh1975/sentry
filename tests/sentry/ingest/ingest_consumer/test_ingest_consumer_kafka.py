@@ -1,10 +1,11 @@
 import datetime
-import time
 import logging
+import random
+import time
+from concurrent.futures.thread import ThreadPoolExecutor
+
 import msgpack
 import pytest
-import random
-
 from confluent_kafka import KafkaError
 from django.conf import settings
 from django.test import override_settings
@@ -78,7 +79,12 @@ def random_group_id():
 
 
 @pytest.mark.django_db(transaction=True)
+@pytest.mark.parametrize(
+    "executor",
+    [pytest.param(None, id="synchronous"), pytest.param(ThreadPoolExecutor(), id="asynchronous")],
+)
 def test_ingest_consumer_reads_from_topic_and_calls_celery_task(
+    executor,
     task_runner,
     kafka_producer,
     kafka_admin,

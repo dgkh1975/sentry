@@ -4,7 +4,7 @@ from io import BytesIO
 from urllib.parse import urljoin
 
 from django.conf import settings
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from rest_framework import status
 from rest_framework.response import Response
 
@@ -24,6 +24,7 @@ CHUNK_UPLOAD_ACCEPT = (
     "release_files",  # Release files assemble
     "pdbs",  # PDB upload and debug id override
     "sources",  # Source artifact bundle upload
+    "bcsymbolmaps",  # BCSymbolMaps and associated PLists/UuidMaps
 )
 
 

@@ -6,8 +6,9 @@ import uuid
 from datetime import datetime, timedelta
 from random import Random
 
-from django.core.urlresolvers import reverse
+import pytz
 from django.template.defaultfilters import slugify
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.safestring import mark_safe
 from django.views.generic import View
@@ -20,12 +21,10 @@ from sentry.digests.notifications import Notification, build_digest
 from sentry.digests.utilities import get_digest_metadata
 from sentry.event_manager import EventManager, get_event_type
 from sentry.http import get_server_hostname
-from sentry.mail.activity import emails
 from sentry.models import (
     Activity,
     Group,
     GroupStatus,
-    GroupSubscriptionReason,
     Organization,
     OrganizationMember,
     Project,
@@ -33,6 +32,8 @@ from sentry.models import (
     Rule,
     Team,
 )
+from sentry.notifications.activity import EMAIL_CLASSES_BY_TYPE
+from sentry.notifications.types import GroupSubscriptionReason
 from sentry.utils import loremipsum
 from sentry.utils.dates import to_datetime, to_timestamp
 from sentry.utils.email import inline_css
@@ -93,6 +94,7 @@ def make_group_generator(random, project):
 
         group = Group(
             id=id,
+            short_id=id,
             project=project,
             culprit=culprit,
             level=level,
@@ -142,10 +144,24 @@ class MailPreview:
         )
 
 
+class MailPreviewAdapter(MailPreview):
+    """
+    This is an adapter for MailPreview that will take similar arguments to MessageBuilder
+    """
+
+    def __init__(self, **kwargs):
+        kwargs["text_template"] = kwargs["template"]
+        del kwargs["template"]
+        if "from_email" in kwargs:
+            del kwargs["from_email"]
+        del kwargs["type"]
+        super().__init__(**kwargs)
+
+
 class ActivityMailPreview:
     def __init__(self, request, activity):
         self.request = request
-        self.email = emails.get(activity.type)(activity)
+        self.email = EMAIL_CLASSES_BY_TYPE.get(activity.type)(activity)
 
     def get_context(self):
         context = self.email.get_base_context()
@@ -172,6 +188,9 @@ class ActivityMailPreview:
 
 
 class ActivityMailDebugView(View):
+    def get_activity(self, request, event):
+        raise NotImplementedError
+
     def get(self, request):
         org = Organization(id=1, slug="organization", name="My Company")
         project = Project(id=1, organization=org, slug="project", name="My Project")
@@ -256,6 +275,7 @@ def alert(request):
             "rule": rule,
             "group": group,
             "event": event,
+            "timezone": pytz.timezone("Europe/Vienna"),
             "link": "http://example.com/link",
             "interfaces": interface_list,
             "tags": event.tags,
@@ -426,7 +446,7 @@ def report(request):
                 id=next(id_sequence),
                 project=p,
                 organization_id=p.organization_id,
-                version="".join([random.choice("0123456789abcdef") for _ in range(40)]),
+                version="".join(random.choice("0123456789abcdef") for _ in range(40)),
                 date_added=dt,
             )
 
@@ -436,8 +456,10 @@ def report(request):
             summaries.append(int(random.weibullvariate(10, 1) * random.paretovariate(0.5)))
         return summaries
 
-    def build_usage_summary():
+    def build_usage_outcomes():
         return (
+            int(random.weibullvariate(3, 1) * random.paretovariate(0.2)),
+            int(random.weibullvariate(3, 1) * random.paretovariate(0.2)),
             int(random.weibullvariate(3, 1) * random.paretovariate(0.2)),
             int(random.weibullvariate(5, 1) * random.paretovariate(0.2)),
         )
@@ -478,7 +500,7 @@ def report(request):
             series,
             aggregates,
             build_issue_summaries(),
-            build_usage_summary(),
+            build_usage_outcomes(),
             build_calendar_data(project),
         )
 
@@ -517,9 +539,7 @@ def request_access(request):
             "organization": org,
             "team": team,
             "url": absolute_uri(
-                reverse(
-                    "sentry-organization-members-requests", kwargs={"organization_slug": org.slug}
-                )
+                reverse("sentry-organization-teams", kwargs={"organization_slug": org.slug})
             ),
         },
     ).render(request)
@@ -539,9 +559,7 @@ def request_access_for_another_member(request):
             "organization": org,
             "team": team,
             "url": absolute_uri(
-                reverse(
-                    "sentry-organization-members-requests", kwargs={"organization_slug": org.slug}
-                )
+                reverse("sentry-organization-teams", kwargs={"organization_slug": org.slug})
             ),
             "requester": request.user.get_display_name(),
         },

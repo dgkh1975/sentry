@@ -11,9 +11,9 @@ from google.cloud import bigtable
 from google.cloud.bigtable.row_data import PartialRowData
 from google.cloud.bigtable.row_set import RowSet
 from google.cloud.bigtable.table import Table
+
 from sentry.utils.codecs import Codec, ZlibCodec, ZstdCodec
 from sentry.utils.kvstore.abstract import KVStorage
-
 
 logger = logging.getLogger(__name__)
 
@@ -59,12 +59,13 @@ class BigtableKVStorage(KVStorage[str, bytes]):
 
     def __init__(
         self,
+        instance: str,
+        table_name: str,
         project: Optional[str] = None,
-        instance: str = "sentry",
-        table_name: str = "nodestore",
         client_options: Optional[Mapping[Any, Any]] = None,
         default_ttl: Optional[timedelta] = None,
         compression: Optional[str] = None,
+        app_profile: Optional[str] = None,
     ) -> None:
         client_options = client_options if client_options is not None else {}
         if "admin" in client_options:
@@ -79,6 +80,7 @@ class BigtableKVStorage(KVStorage[str, bytes]):
         self.client_options = client_options
         self.default_ttl = default_ttl
         self.compression = compression
+        self.app_profile = app_profile
 
         self.__table: Table
         self.__table_lock = Lock()
@@ -88,7 +90,7 @@ class BigtableKVStorage(KVStorage[str, bytes]):
             return (
                 bigtable.Client(project=self.project, admin=True, **self.client_options)
                 .instance(self.instance)
-                .table(self.table_name)
+                .table(self.table_name, app_profile_id=self.app_profile)
             )
 
         try:
@@ -106,7 +108,7 @@ class BigtableKVStorage(KVStorage[str, bytes]):
                     table = self.__table = (
                         bigtable.Client(project=self.project, **self.client_options)
                         .instance(self.instance)
-                        .table(self.table_name)
+                        .table(self.table_name, app_profile_id=self.app_profile)
                     )
             return table
 

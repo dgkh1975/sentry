@@ -7,13 +7,16 @@ from sentry.db.models import (
     Model,
     sane_repr,
 )
-from sentry.models.integration import ExternalProviders
 from sentry.notifications.manager import NotificationsManager
 from sentry.notifications.types import (
     NotificationScopeType,
     NotificationSettingOptionValues,
     NotificationSettingTypes,
+    get_notification_scope_name,
+    get_notification_setting_type_name,
+    get_notification_setting_value_name,
 )
+from sentry.types.integrations import ExternalProviders, get_provider_name
 
 
 class NotificationSetting(Model):
@@ -24,13 +27,30 @@ class NotificationSetting(Model):
     and the value is ("value").
     """
 
-    __core__ = False
+    __include_in_export__ = False
+
+    @property
+    def scope_str(self) -> str:
+        return get_notification_scope_name(self.scope_type)
+
+    @property
+    def type_str(self) -> str:
+        return get_notification_setting_type_name(self.type)
+
+    @property
+    def value_str(self) -> str:
+        return get_notification_setting_value_name(self.value)
+
+    @property
+    def provider_str(self) -> str:
+        return get_provider_name(self.provider)
 
     scope_type = BoundedPositiveIntegerField(
         choices=(
             (NotificationScopeType.USER, "user"),
             (NotificationScopeType.ORGANIZATION, "organization"),
             (NotificationScopeType.PROJECT, "project"),
+            (NotificationScopeType.TEAM, "team"),
         ),
         null=False,
     )
@@ -82,12 +102,12 @@ class NotificationSetting(Model):
         )
 
     __repr__ = sane_repr(
-        "scope_type",
+        "scope_str",
         "scope_identifier",
         "target",
-        "provider",
-        "type",
-        "value",
+        "provider_str",
+        "type_str",
+        "value_str",
     )
 
 

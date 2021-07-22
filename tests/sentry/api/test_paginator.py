@@ -1,22 +1,23 @@
 from datetime import timedelta
-from django.utils import timezone
 from unittest import TestCase as SimpleTestCase
+
+from django.utils import timezone
 
 from sentry.api.paginator import (
     BadPaginationError,
-    Paginator,
-    DateTimePaginator,
-    OffsetPaginator,
-    SequencePaginator,
-    GenericOffsetPaginator,
     ChainPaginator,
     CombinedQuerysetIntermediary,
     CombinedQuerysetPaginator,
+    DateTimePaginator,
+    GenericOffsetPaginator,
+    OffsetPaginator,
+    Paginator,
+    SequencePaginator,
     reverse_bisect_left,
 )
-from sentry.models import User, Rule
 from sentry.incidents.models import AlertRule
-from sentry.testutils import TestCase, APITestCase
+from sentry.models import Rule, User
+from sentry.testutils import APITestCase, TestCase
 from sentry.utils.cursors import Cursor
 
 
@@ -547,9 +548,9 @@ class CombinedQuerysetPaginatorTest(APITestCase):
         rule3 = Rule.objects.create(label="rule3", project=self.project)
 
         alert_rule_intermediary = CombinedQuerysetIntermediary(
-            AlertRule.objects.all(), "date_added"
+            AlertRule.objects.all(), ["date_added"]
         )
-        rule_intermediary = CombinedQuerysetIntermediary(Rule.objects.all(), "date_added")
+        rule_intermediary = CombinedQuerysetIntermediary(Rule.objects.all(), ["date_added"])
         paginator = CombinedQuerysetPaginator(
             intermediaries=[alert_rule_intermediary, rule_intermediary],
             desc=True,

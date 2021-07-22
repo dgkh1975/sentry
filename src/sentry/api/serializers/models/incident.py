@@ -1,6 +1,7 @@
 from collections import defaultdict
 
 from sentry.api.serializers import Serializer, register, serialize
+from sentry.api.serializers.models.alert_rule import AlertRuleSerializer
 from sentry.incidents.models import (
     Incident,
     IncidentActivity,
@@ -28,7 +29,11 @@ class IncidentSerializer(Serializer):
 
         alert_rules = {
             d["id"]: d
-            for d in serialize({i.alert_rule for i in item_list if i.alert_rule.id}, user)
+            for d in serialize(
+                {i.alert_rule for i in item_list if i.alert_rule.id},
+                user,
+                AlertRuleSerializer(expand=self.expand),
+            )
         }
 
         results = {}
@@ -88,15 +93,17 @@ class IncidentSerializer(Serializer):
 class DetailedIncidentSerializer(IncidentSerializer):
     def __init__(self, expand=None):
         if expand is None:
-            expand = ["seen_by"]
-        elif "seen_by" not in expand:
+            expand = []
+        if "seen_by" not in expand:
             expand.append("seen_by")
+        if "original_alert_rule" not in expand:
+            expand.append("original_alert_rule")
         super().__init__(expand=expand)
 
     def get_attrs(self, item_list, user, **kwargs):
         results = super().get_attrs(item_list, user=user, **kwargs)
         subscribed_incidents = set()
-        if user.is_authenticated():
+        if user.is_authenticated:
             subscribed_incidents = set(
                 IncidentSubscription.objects.filter(incident__in=item_list, user=user).values_list(
                     "incident_id", flat=True

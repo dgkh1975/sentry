@@ -1,11 +1,12 @@
-from django.core import signing
-from django.core.urlresolvers import reverse
 from urllib.parse import urlencode
+
+from django.core import signing
+from django.urls import reverse
 
 from sentry import options
 from sentry.models import User
 from sentry.utils.http import absolute_uri
-from sentry.utils.numbers import base36_encode, base36_decode
+from sentry.utils.numbers import base36_decode, base36_encode
 
 
 def get_signer():
@@ -20,7 +21,7 @@ def generate_signed_link(user, viewname, referrer=None, args=None, kwargs=None):
     ID.
     """
     if hasattr(user, "is_authenticated"):
-        if not user.is_authenticated():
+        if not user.is_authenticated:
             raise RuntimeError("Need an authenticated user to sign a link.")
         user_id = user.id
     else:

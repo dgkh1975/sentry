@@ -1,18 +1,18 @@
 import math
+from datetime import datetime
+
 import pytest
 import pytz
-
-from datetime import datetime
-from freezegun import freeze_time
 from django.http import QueryDict
+from freezegun import freeze_time
 
 # from sentry.testutils import TestCase
 from sentry.snuba.sessions_v2 import (
-    QueryDefinition,
-    massage_sessions_result,
-    _get_timestamps,
     InvalidParams,
-    _get_constrained_date_range,
+    QueryDefinition,
+    _get_timestamps,
+    get_constrained_date_range,
+    massage_sessions_result,
 )
 
 
@@ -32,22 +32,22 @@ def result_sorted(result):
 
 @freeze_time("2018-12-11 03:21:00")
 def test_round_range():
-    start, end, interval = _get_constrained_date_range({"statsPeriod": "2d"})
+    start, end, interval = get_constrained_date_range({"statsPeriod": "2d"})
     assert start == datetime(2018, 12, 9, 4, tzinfo=pytz.utc)
     assert end == datetime(2018, 12, 11, 3, 22, tzinfo=pytz.utc)
 
-    start, end, interval = _get_constrained_date_range({"statsPeriod": "2d", "interval": "1d"})
+    start, end, interval = get_constrained_date_range({"statsPeriod": "2d", "interval": "1d"})
     assert start == datetime(2018, 12, 10, tzinfo=pytz.utc)
     assert end == datetime(2018, 12, 11, 3, 22, tzinfo=pytz.utc)
 
 
 def test_invalid_interval():
     with pytest.raises(InvalidParams):
-        start, end, interval = _get_constrained_date_range({"interval": "0d"})
+        start, end, interval = get_constrained_date_range({"interval": "0d"})
 
 
 def test_round_exact():
-    start, end, interval = _get_constrained_date_range(
+    start, end, interval = get_constrained_date_range(
         {"start": "2021-01-12T04:06:16", "end": "2021-01-17T08:26:13", "interval": "1d"},
     )
     assert start == datetime(2021, 1, 12, tzinfo=pytz.utc)
@@ -55,7 +55,7 @@ def test_round_exact():
 
 
 def test_inclusive_end():
-    start, end, interval = _get_constrained_date_range(
+    start, end, interval = get_constrained_date_range(
         {"start": "2021-02-24T00:00:00", "end": "2021-02-25T00:00:00", "interval": "1h"},
     )
     assert start == datetime(2021, 2, 24, tzinfo=pytz.utc)
@@ -115,7 +115,6 @@ def test_timestamps():
 
     expected_timestamps = ["2020-12-17T12:00:00Z", "2020-12-18T00:00:00Z"]
     actual_timestamps = _get_timestamps(query)
-
     assert actual_timestamps == expected_timestamps
 
 
@@ -322,6 +321,32 @@ def test_massage_simple_timeseries():
     assert actual_result == expected_result
 
 
+@freeze_time("2020-12-18T11:14:17.105Z")
+def test_massage_no_timeseries():
+
+    query = _make_query("statsPeriod=1d&interval=6h&field=sum(session)&groupby=projects")
+    result_totals = [{"sessions": 4}]
+    # snuba returns the datetimes as strings for now
+    result_timeseries = None
+
+    expected_result = {
+        "start": "2020-12-17T12:00:00Z",
+        "end": "2020-12-18T11:15:00Z",
+        "query": "",
+        "intervals": [
+            "2020-12-17T12:00:00Z",
+            "2020-12-17T18:00:00Z",
+            "2020-12-18T00:00:00Z",
+            "2020-12-18T06:00:00Z",
+        ],
+        "groups": [{"by": {}, "totals": {"sum(session)": 4}}],
+    }
+
+    actual_result = result_sorted(massage_sessions_result(query, result_totals, result_timeseries))
+
+    assert actual_result == expected_result
+
+
 def test_massage_exact_timeseries():
     query = _make_query(
         "start=2020-12-17T15:12:34Z&end=2020-12-18T11:14:17Z&interval=6h&field=sum(session)"
@@ -417,16 +442,38 @@ def test_massage_virtual_groupby_timeseries():
         {
             "users": 1,
             "users_crashed": 1,
-            "sessions": 6,
-            "sessions_errored": 1,
+            "sessions": 31,
+            "sessions_errored": 15,
             "users_errored": 1,
-            "sessions_abnormal": 0,
-            "sessions_crashed": 1,
+            "sessions_abnormal": 6,
+            "sessions_crashed": 8,
             "users_abnormal": 0,
         }
     ]
     # snuba returns the datetimes as strings for now
     result_timeseries = [
+        {
+            "sessions_errored": 4,
+            "users": 1,
+            "users_crashed": 0,
+            "sessions_abnormal": 4,
+            "sessions": 10,
+            "users_errored": 0,
+            "users_abnormal": 0,
+            "sessions_crashed": 3,
+            "bucketed_started": "2020-12-17T18:00:00+00:00",
+        },
+        {
+            "sessions_errored": 10,
+            "users": 1,
+            "users_crashed": 0,
+            "sessions_abnormal": 2,
+            "sessions": 15,
+            "users_errored": 0,
+            "users_abnormal": 0,
+            "sessions_crashed": 4,
+            "bucketed_started": "2020-12-18T00:00:00+00:00",
+        },
         {
             "sessions_errored": 1,
             "users": 1,
@@ -464,32 +511,99 @@ def test_massage_virtual_groupby_timeseries():
         "groups": [
             {
                 "by": {"session.status": "abnormal"},
-                "series": {"count_unique(user)": [0, 0, 0, 0], "sum(session)": [0, 0, 0, 0]},
-                "totals": {"count_unique(user)": 0, "sum(session)": 0},
+                "series": {"count_unique(user)": [0, 0, 0, 0], "sum(session)": [4, 2, 0, 0]},
+                "totals": {"count_unique(user)": 0, "sum(session)": 6},
             },
             {
                 "by": {"session.status": "crashed"},
-                "series": {"count_unique(user)": [0, 0, 0, 1], "sum(session)": [0, 0, 0, 1]},
-                "totals": {"count_unique(user)": 1, "sum(session)": 1},
+                "series": {"count_unique(user)": [0, 0, 0, 1], "sum(session)": [3, 4, 0, 1]},
+                "totals": {"count_unique(user)": 1, "sum(session)": 8},
             },
             {
                 "by": {"session.status": "errored"},
-                "series": {"count_unique(user)": [0, 0, 0, 1], "sum(session)": [0, 0, 0, 1]},
-                "totals": {"count_unique(user)": 1, "sum(session)": 1},
+                "series": {"count_unique(user)": [0, 0, 0, 0], "sum(session)": [0, 4, 0, 0]},
+                "totals": {"count_unique(user)": 0, "sum(session)": 1},
             },
             {
                 "by": {"session.status": "healthy"},
-                "series": {"count_unique(user)": [0, 0, 1, 0], "sum(session)": [0, 0, 3, 2]},
+                "series": {"count_unique(user)": [1, 1, 1, 0], "sum(session)": [6, 5, 3, 2]},
                 # while in one of the time slots, we have a healthy user, it is
                 # the *same* user as the one experiencing a crash later on,
                 # so in the *whole* time window, that one user is not counted as healthy,
                 # so the `0` here is expected, as thats an example of the `count_unique` behavior.
-                "totals": {"count_unique(user)": 0, "sum(session)": 5},
+                "totals": {"count_unique(user)": 0, "sum(session)": 16},
             },
         ],
     }
 
     actual_result = result_sorted(massage_sessions_result(query, result_totals, result_timeseries))
+
+    assert actual_result == expected_result
+
+
+@freeze_time("2020-12-18T13:25:15.769Z")
+def test_clamping_in_massage_sessions_results_with_groupby_timeseries():
+    query = _make_query(
+        "statsPeriod=12h&interval=6h&field=sum(session)&field=count_unique(user)&groupBy=session.status"
+    )
+    # snuba returns the datetimes as strings for now
+    result_timeseries = [
+        {
+            "sessions": 5,
+            "sessions_errored": 10,
+            "sessions_crashed": 0,
+            "sessions_abnormal": 0,
+            "users": 5,
+            "users_errored": 10,
+            "users_crashed": 0,
+            "users_abnormal": 0,
+            "bucketed_started": "2020-12-18T06:00:00+00:00",
+        },
+        {
+            "sessions": 7,
+            "sessions_errored": 3,
+            "sessions_crashed": 2,
+            "sessions_abnormal": 2,
+            "users": 7,
+            "users_errored": 3,
+            "users_crashed": 2,
+            "users_abnormal": 2,
+            "bucketed_started": "2020-12-18T12:00:00+00:00",
+        },
+    ]
+    expected_result = {
+        "start": "2020-12-18T06:00:00Z",
+        "end": "2020-12-18T13:26:00Z",
+        "query": "",
+        "intervals": [
+            "2020-12-18T06:00:00Z",
+            "2020-12-18T12:00:00Z",
+        ],
+        "groups": [
+            {
+                "by": {"session.status": "abnormal"},
+                "series": {"count_unique(user)": [0, 2], "sum(session)": [0, 2]},
+                "totals": {"count_unique(user)": 0, "sum(session)": 0},
+            },
+            {
+                "by": {"session.status": "crashed"},
+                "series": {"count_unique(user)": [0, 2], "sum(session)": [0, 2]},
+                "totals": {"count_unique(user)": 0, "sum(session)": 0},
+            },
+            {
+                "by": {"session.status": "errored"},
+                "series": {"count_unique(user)": [10, 0], "sum(session)": [10, 0]},
+                "totals": {"count_unique(user)": 0, "sum(session)": 0},
+            },
+            {
+                "by": {"session.status": "healthy"},
+                "series": {"count_unique(user)": [0, 4], "sum(session)": [0, 4]},
+                "totals": {"count_unique(user)": 0, "sum(session)": 0},
+            },
+        ],
+    }
+
+    actual_result = result_sorted(massage_sessions_result(query, [], result_timeseries))
 
     assert actual_result == expected_result
 

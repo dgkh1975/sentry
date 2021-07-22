@@ -1,15 +1,18 @@
 import logging
 import warnings
+from typing import Any, Sequence
 
-from bitfield import BitField
+from django.contrib.auth.models import AbstractBaseUser
+from django.contrib.auth.models import UserManager as DjangoUserManager
 from django.contrib.auth.signals import user_logged_out
-from django.contrib.auth.models import AbstractBaseUser, UserManager as DjangoUserManager
-from django.core.urlresolvers import reverse
-from django.dispatch import receiver
 from django.db import IntegrityError, models, transaction
+from django.db.models.query import QuerySet
+from django.dispatch import receiver
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 
+from bitfield import BitField
 from sentry.db.models import BaseManager, BaseModel, BoundedAutoField, FlexibleForeignKey, sane_repr
 from sentry.models import LostPasswordHash
 from sentry.utils.http import absolute_uri
@@ -18,6 +21,28 @@ audit_logger = logging.getLogger("sentry.audit.user")
 
 
 class UserManager(BaseManager, DjangoUserManager):
+    def get_team_members_with_verified_email_for_projects(
+        self, projects: Sequence[Any]
+    ) -> QuerySet:
+        from sentry.models import ProjectTeam, Team
+
+        return self.filter(
+            emails__is_verified=True,
+            sentry_orgmember_set__teams__in=Team.objects.filter(
+                id__in=ProjectTeam.objects.filter(project__in=projects).values_list(
+                    "team_id", flat=True
+                )
+            ),
+            is_active=True,
+        ).distinct()
+
+    def get_from_group(self, group):
+        """Get a queryset of all users in all teams in a given Group's project."""
+        return self.filter(
+            sentry_orgmember_set__teams__in=group.project.teams.all(),
+            is_active=True,
+        )
+
     def get_from_teams(self, organization_id, teams):
         return self.filter(
             sentry_orgmember_set__organization_id=organization_id,
@@ -39,7 +64,7 @@ class UserManager(BaseManager, DjangoUserManager):
 
 
 class User(BaseModel, AbstractBaseUser):
-    __core__ = True
+    __include_in_export__ = True
 
     id = BoundedAutoField(primary_key=True)
     username = models.CharField(_("username"), max_length=128, unique=True)
@@ -216,8 +241,8 @@ class User(BaseModel, AbstractBaseUser):
         from sentry.models import (
             Activity,
             AuditLogEntry,
-            AuthIdentity,
             Authenticator,
+            AuthIdentity,
             GroupAssignee,
             GroupBookmark,
             GroupSeen,
@@ -313,24 +338,14 @@ class User(BaseModel, AbstractBaseUser):
             request.session["_nonce"] = self.session_nonce
 
     def get_orgs(self):
-        from sentry.models import Organization, OrganizationMember, OrganizationStatus
+        from sentry.models import Organization
 
-        return Organization.objects.filter(
-            status=OrganizationStatus.VISIBLE,
-            id__in=OrganizationMember.objects.filter(user=self).values("organization"),
-        )
+        return Organization.objects.get_for_user_ids({self.id})
 
     def get_projects(self):
-        from sentry.models import Project, ProjectStatus, ProjectTeam, OrganizationMemberTeam
+        from sentry.models import Project
 
-        return Project.objects.filter(
-            status=ProjectStatus.VISIBLE,
-            id__in=ProjectTeam.objects.filter(
-                team_id__in=OrganizationMemberTeam.objects.filter(
-                    organizationmember__user=self
-                ).values_list("team_id", flat=True)
-            ).values_list("project_id", flat=True),
-        )
+        return Project.objects.get_for_user_ids({self.id})
 
     def get_orgs_require_2fa(self):
         from sentry.models import Organization, OrganizationStatus

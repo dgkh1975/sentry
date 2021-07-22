@@ -1,14 +1,20 @@
-import responses
+import re
 from urllib.parse import parse_qsl
-from sentry.utils.compat.mock import patch
 
-from sentry.utils import json
-from sentry.incidents.logic import CRITICAL_TRIGGER_LABEL
-from sentry.integrations.slack.utils import build_group_attachment, build_incident_attachment
-from sentry.models import Integration, OrganizationIntegration
+import responses
+
+from sentry.integrations.slack.unfurl import Handler, make_type_coercer
+from sentry.models import (
+    Identity,
+    IdentityProvider,
+    IdentityStatus,
+    Integration,
+    OrganizationIntegration,
+)
 from sentry.testutils import APITestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.utils import json
 from sentry.utils.compat import filter
+from sentry.utils.compat.mock import Mock, patch
 
 UNSET = object()
 
@@ -21,31 +27,15 @@ LINK_SHARED_EVENT = """{
     "links": [
         {
             "domain": "example.com",
-            "url": "http://testserver/fizz/buzz"
+            "url": "http://testserver/organizations/test-org/issues/foo/"
         },
         {
             "domain": "example.com",
-            "url": "http://testserver/organizations/%(org1)s/issues/%(group1)s/"
+            "url": "http://testserver/organizations/test-org/issues/bar/baz/"
         },
         {
             "domain": "example.com",
-            "url": "http://testserver/organizations/%(org2)s/issues/%(group2)s/bar/"
-        },
-        {
-            "domain": "example.com",
-            "url": "http://testserver/organizations/%(org1)s/issues/%(group1)s/bar/"
-        },
-        {
-            "domain": "example.com",
-            "url": "http://testserver/organizations/%(org1)s/issues/%(group3)s/events/%(event)s/"
-        },
-        {
-            "domain": "example.com",
-            "url": "http://testserver/organizations/%(org1)s/alerts/rules/details/%(incident)s/"
-        },
-        {
-            "domain": "another-example.com",
-            "url": "https://yet.another-example.com/v/abcde"
+            "url": "http://testserver/organizations/test-org/issues/bar/baz/"
         }
     ]
 }"""
@@ -56,6 +46,22 @@ MESSAGE_IM_EVENT = """{
     "user": "Uxxxxxxx",
     "text": "helloo",
     "message_ts": "123456789.9875"
+}"""
+
+MESSAGE_IM_EVENT_UNLINK = """{
+        "type": "message",
+        "text": "unlink",
+        "user": "UXXXXXXX1",
+        "team": "TXXXXXXX1",
+        "channel": "DTPJWTJ2D"
+}"""
+
+MESSAGE_IM_EVENT_LINK = """{
+        "type": "message",
+        "text": "link",
+        "user": "UXXXXXXX1",
+        "team": "TXXXXXXX1",
+        "channel": "DTPJWTJ2D"
 }"""
 
 MESSAGE_IM_BOT_EVENT = """{
@@ -128,58 +134,47 @@ class UrlVerificationEventTest(BaseEventTest):
 
 class LinkSharedEventTest(BaseEventTest):
     @responses.activate
-    def test_valid_token(self):
-        responses.add(responses.POST, "https://slack.com/api/chat.unfurl", json={"ok": True})
-        org2 = self.create_organization(name="biz")
-        project1 = self.create_project(organization=self.org)
-        project2 = self.create_project(organization=org2)
-        min_ago = iso_format(before_now(minutes=1))
-        group1 = self.create_group(project=project1)
-        group2 = self.create_group(project=project2)
-        event = self.store_event(
-            data={"fingerprint": ["group3"], "timestamp": min_ago}, project_id=project1.id
-        )
-        group3 = event.group
-        alert_rule = self.create_alert_rule()
-
-        incident = self.create_incident(
-            status=2, organization=self.org, projects=[project1], alert_rule=alert_rule
-        )
-        incident.update(identifier=123)
-        trigger = self.create_alert_rule_trigger(alert_rule, CRITICAL_TRIGGER_LABEL, 100)
-        action = self.create_alert_rule_trigger_action(
-            alert_rule_trigger=trigger, triggered_for_incident=incident
-        )
-
-        resp = self.post_webhook(
-            event_data=json.loads(
-                LINK_SHARED_EVENT
-                % {
-                    "group1": group1.id,
-                    "group2": group2.id,
-                    "group3": group3.id,
-                    "incident": incident.identifier,
-                    "org1": self.org.slug,
-                    "org2": org2.slug,
-                    "event": event.event_id,
-                }
+    @patch(
+        "sentry.integrations.slack.endpoints.event.match_link",
+        # match_link will be called twice, for each our links. Resolve into
+        # two unique links and one duplicate.
+        side_effect=[
+            ("mock_link", {"arg1": "value1"}),
+            ("mock_link", {"arg1", "value2"}),
+            ("mock_link", {"arg1": "value1"}),
+        ],
+    )
+    @patch(
+        "sentry.integrations.slack.endpoints.event.link_handlers",
+        {
+            "mock_link": Handler(
+                matcher=re.compile(r"test"),
+                arg_mapper=make_type_coercer({}),
+                fn=Mock(return_value={"link1": "unfurl", "link2": "unfurl"}),
             )
-        )
+        },
+    )
+    def share_links(self, mock_match_link):
+        responses.add(responses.POST, "https://slack.com/api/chat.unfurl", json={"ok": True})
+
+        resp = self.post_webhook(event_data=json.loads(LINK_SHARED_EVENT))
         assert resp.status_code == 200, resp.content
+        assert len(mock_match_link.mock_calls) == 3
+
         data = dict(parse_qsl(responses.calls[0].request.body))
         unfurls = json.loads(data["unfurls"])
-        issue_url = f"http://testserver/organizations/{self.org.slug}/issues/{group1.id}/"
-        incident_url = f"http://testserver/organizations/{self.org.slug}/alerts/rules/details/{incident.identifier}/"
-        event_url = f"http://testserver/organizations/{self.org.slug}/issues/{group3.id}/events/{event.event_id}/"
 
-        assert unfurls == {
-            issue_url: build_group_attachment(group1),
-            incident_url: build_incident_attachment(action, incident),
-            event_url: build_group_attachment(group3, event=event, link_to_event=True),
-        }
+        # We only have two unfurls since one link was duplicated
+        assert len(unfurls) == 2
+        assert unfurls["link1"] == "unfurl"
+        assert unfurls["link2"] == "unfurl"
+
+        return data
+
+    def test_valid_token(self):
+        data = self.share_links()
         assert data["token"] == "xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
 
-    @responses.activate
     def test_user_access_token(self):
         # this test is needed to make sure that classic bots installed by on-prem users
         # still work since they needed to use a user_access_token for unfurl
@@ -190,50 +185,19 @@ class LinkSharedEventTest(BaseEventTest):
             }
         )
         self.integration.save()
-        responses.add(responses.POST, "https://slack.com/api/chat.unfurl", json={"ok": True})
-        org2 = self.create_organization(name="biz")
-        project1 = self.create_project(organization=self.org)
-        project2 = self.create_project(organization=org2)
-        min_ago = iso_format(before_now(minutes=1))
-        group1 = self.create_group(project=project1)
-        group2 = self.create_group(project=project2)
-        event = self.store_event(
-            data={"fingerprint": ["group3"], "timestamp": min_ago}, project_id=project1.id
-        )
-        group3 = event.group
-        alert_rule = self.create_alert_rule()
-        incident = self.create_incident(
-            status=2, organization=self.org, projects=[project1], alert_rule=alert_rule
-        )
-        incident.update(identifier=123)
-        resp = self.post_webhook(
-            event_data=json.loads(
-                LINK_SHARED_EVENT
-                % {
-                    "group1": group1.id,
-                    "group2": group2.id,
-                    "group3": group3.id,
-                    "incident": incident.identifier,
-                    "org1": self.org.slug,
-                    "org2": org2.slug,
-                    "event": event.event_id,
-                }
-            )
-        )
-        assert resp.status_code == 200, resp.content
-        data = dict(parse_qsl(responses.calls[0].request.body))
+
+        data = self.share_links()
         assert data["token"] == "xoxt-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
 
 
-def get_block_type_text(block_type, data):
-    block = filter(lambda x: x["type"] == block_type, data["blocks"])[0]
-    if block_type == "section":
-        return block["text"]["text"]
-
-    return block["elements"][0]["text"]["text"]
-
-
 class MessageIMEventTest(BaseEventTest):
+    def get_block_type_text(self, block_type, data):
+        block = filter(lambda x: x["type"] == block_type, data["blocks"])[0]
+        if block_type == "section":
+            return block["text"]["text"]
+
+        return block["elements"][0]["text"]["text"]
+
     @responses.activate
     def test_user_message_im(self):
         responses.add(responses.POST, "https://slack.com/api/chat.postMessage", json={"ok": True})
@@ -243,10 +207,102 @@ class MessageIMEventTest(BaseEventTest):
         assert request.headers["Authorization"] == "Bearer xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
         data = json.loads(request.body)
         assert (
-            get_block_type_text("section", data)
+            self.get_block_type_text("section", data)
             == "Want to learn more about configuring alerts in Sentry? Check out our documentation."
         )
-        assert get_block_type_text("actions", data) == "Sentry Docs"
+        assert self.get_block_type_text("actions", data) == "Sentry Docs"
+
+    @responses.activate
+    def test_user_message_im_notification_platform(self):
+        responses.add(responses.POST, "https://slack.com/api/chat.postMessage", json={"ok": True})
+        with self.feature("organizations:notification-platform"):
+            resp = self.post_webhook(event_data=json.loads(MESSAGE_IM_EVENT))
+        assert resp.status_code == 200, resp.content
+        request = responses.calls[0].request
+        assert request.headers["Authorization"] == "Bearer xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
+        data = json.loads(request.body)
+        assert (
+            self.get_block_type_text("section", data)
+            == "Here are the commands you can use. Commands not working? Re-install the app!"
+        )
+
+    @responses.activate
+    def test_user_message_link(self):
+        """
+        Test that when a user types in "link" to the DM we reply with the correct response
+        """
+        IdentityProvider.objects.create(type="slack", external_id="TXXXXXXX1", config={})
+
+        responses.add(responses.POST, "https://slack.com/api/chat.postMessage", json={"ok": True})
+        with self.feature("organizations:notification-platform"):
+            resp = self.post_webhook(event_data=json.loads(MESSAGE_IM_EVENT_LINK))
+        assert resp.status_code == 200, resp.content
+        request = responses.calls[0].request
+        assert request.headers["Authorization"] == "Bearer xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
+        data = json.loads(request.body)
+        assert "Link your Slack identity" in data["text"]
+
+    @responses.activate
+    def test_user_message_already_linked(self):
+        """
+        Test that when a user who has already linked their identity types in "link" to the DM we reply with the correct response
+        """
+        idp = IdentityProvider.objects.create(type="slack", external_id="TXXXXXXX1", config={})
+        Identity.objects.create(
+            external_id="UXXXXXXX1",
+            idp=idp,
+            user=self.user,
+            status=IdentityStatus.VALID,
+            scopes=[],
+        )
+
+        responses.add(responses.POST, "https://slack.com/api/chat.postMessage", json={"ok": True})
+        with self.feature("organizations:notification-platform"):
+            resp = self.post_webhook(event_data=json.loads(MESSAGE_IM_EVENT_LINK))
+        assert resp.status_code == 200, resp.content
+        request = responses.calls[0].request
+        assert request.headers["Authorization"] == "Bearer xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
+        data = json.loads(request.body)
+        assert "You are already linked" in data["text"]
+
+    @responses.activate
+    def test_user_message_unlink(self):
+        """
+        Test that when a user types in "unlink" to the DM we reply with the correct response
+        """
+        idp = IdentityProvider.objects.create(type="slack", external_id="TXXXXXXX1", config={})
+        Identity.objects.create(
+            external_id="UXXXXXXX1",
+            idp=idp,
+            user=self.user,
+            status=IdentityStatus.VALID,
+            scopes=[],
+        )
+
+        responses.add(responses.POST, "https://slack.com/api/chat.postMessage", json={"ok": True})
+        with self.feature("organizations:notification-platform"):
+            resp = self.post_webhook(event_data=json.loads(MESSAGE_IM_EVENT_UNLINK))
+        assert resp.status_code == 200, resp.content
+        request = responses.calls[0].request
+        assert request.headers["Authorization"] == "Bearer xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
+        data = json.loads(request.body)
+        assert "Click here to unlink your identity" in data["text"]
+
+    @responses.activate
+    def test_user_message_already_unlinked(self):
+        """
+        Test that when a user without an Identity types in "unlink" to the DM we reply with the correct response
+        """
+        IdentityProvider.objects.create(type="slack", external_id="TXXXXXXX1", config={})
+
+        responses.add(responses.POST, "https://slack.com/api/chat.postMessage", json={"ok": True})
+        with self.feature("organizations:notification-platform"):
+            resp = self.post_webhook(event_data=json.loads(MESSAGE_IM_EVENT_UNLINK))
+        assert resp.status_code == 200, resp.content
+        request = responses.calls[0].request
+        assert request.headers["Authorization"] == "Bearer xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
+        data = json.loads(request.body)
+        assert "You do not have a linked identity to unlink" in data["text"]
 
     def test_bot_message_im(self):
         resp = self.post_webhook(event_data=json.loads(MESSAGE_IM_BOT_EVENT))

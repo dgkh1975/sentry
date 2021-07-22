@@ -1,4 +1,4 @@
-import React from 'react';
+import Cookies from 'js-cookie';
 
 import {mountWithTheme} from 'sentry-test/enzyme';
 
@@ -57,11 +57,14 @@ describe('Role', function () {
 
     it('gives access to a superuser with unsufficient role', function () {
       ConfigStore.config.user = {isSuperuser: true};
+      Cookies.set = jest.fn();
+
       mountWithTheme(<Role role="owner">{childrenMock}</Role>, routerContext);
 
       expect(childrenMock).toHaveBeenCalledWith({
         hasRole: true,
       });
+      expect(Cookies.set).toHaveBeenCalledWith('su', 'test');
       ConfigStore.config.user = {isSuperuser: false};
     });
 

@@ -1,40 +1,33 @@
-import responses
 import time
+from urllib.parse import parse_qs
 
+import responses
 from django.core import mail
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.utils import timezone
 from exam import fixture
 from freezegun import freeze_time
-from urllib.parse import parse_qs
 
 from sentry.incidents.action_handlers import (
     EmailActionHandler,
-    generate_incident_trigger_email_context,
     MsTeamsActionHandler,
     PagerDutyActionHandler,
     SentryAppActionHandler,
     SlackActionHandler,
+    generate_incident_trigger_email_context,
 )
 from sentry.incidents.logic import update_incident_status
 from sentry.incidents.models import (
+    INCIDENT_STATUS,
     AlertRuleTriggerAction,
     IncidentStatus,
     IncidentStatusMethod,
     TriggerStatus,
-    INCIDENT_STATUS,
 )
-from sentry.models import (
-    Integration,
-    NotificationSetting,
-    PagerDutyService,
-)
-from sentry.models.integration import ExternalProviders
-from sentry.notifications.types import (
-    NotificationSettingTypes,
-    NotificationSettingOptionValues,
-)
+from sentry.models import Integration, NotificationSetting, PagerDutyService, UserOption
+from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
 from sentry.testutils import TestCase
+from sentry.types.integrations import ExternalProviders
 from sentry.utils import json
 from sentry.utils.http import absolute_uri
 
@@ -104,6 +97,42 @@ class EmailActionHandlerGetTargetsTest(TestCase):
         )
         handler = EmailActionHandler(action, self.incident, self.project)
         assert set(handler.get_targets()) == {(new_user.id, new_user.email)}
+
+    def test_user_email_routing(self):
+        new_email = "marcos@sentry.io"
+        UserOption.objects.create(
+            user=self.user, project=self.project, key="mail:email", value=new_email
+        )
+
+        action = self.create_alert_rule_trigger_action(
+            target_type=AlertRuleTriggerAction.TargetType.USER,
+            target_identifier=str(self.user.id),
+        )
+        handler = EmailActionHandler(action, self.incident, self.project)
+
+        assert handler.get_targets() == [(self.user.id, new_email)]
+
+    def test_team_email_routing(self):
+        new_user = self.create_user()
+
+        new_email = "marcos@sentry.io"
+        UserOption.objects.create(
+            user=self.user, project=self.project, key="mail:email", value=new_email
+        )
+        UserOption.objects.create(
+            user=new_user, project=self.project, key="mail:email", value=new_email
+        )
+
+        self.create_team_membership(team=self.team, user=new_user)
+        action = self.create_alert_rule_trigger_action(
+            target_type=AlertRuleTriggerAction.TargetType.TEAM,
+            target_identifier=str(self.team.id),
+        )
+        handler = EmailActionHandler(action, self.incident, self.project)
+        assert set(handler.get_targets()) == {
+            (self.user.id, new_email),
+            (new_user.id, new_email),
+        }
 
 
 @freeze_time()
@@ -211,7 +240,7 @@ class EmailActionHandlerTest(FireTest, TestCase):
 class SlackActionHandlerTest(FireTest, TestCase):
     @responses.activate
     def run_test(self, incident, method):
-        from sentry.integrations.slack.utils import build_incident_attachment
+        from sentry.integrations.slack.message_builder.incidents import build_incident_attachment
 
         token = "xoxp-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
         integration = Integration.objects.create(
@@ -267,7 +296,7 @@ class SlackActionHandlerTest(FireTest, TestCase):
 class SlackWorkspaceActionHandlerTest(FireTest, TestCase):
     @responses.activate
     def run_test(self, incident, method):
-        from sentry.integrations.slack.utils import build_incident_attachment
+        from sentry.integrations.slack.message_builder.incidents import build_incident_attachment
 
         token = "xoxb-xxxxxxxxx-xxxxxxxxxx-xxxxxxxxxxxx"
         integration = Integration.objects.create(

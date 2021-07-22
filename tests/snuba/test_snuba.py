@@ -1,19 +1,19 @@
 import copy
-from unittest import mock
-from datetime import datetime, timedelta
-
-import pytest
 import time
 import uuid
+from datetime import datetime, timedelta
+from unittest import mock
+
+import pytest
 from django.utils import timezone
 
 from sentry.testutils import SnubaTestCase, TestCase
-from sentry.testutils.helpers.datetime import iso_format, before_now
+from sentry.testutils.helpers.datetime import before_now, iso_format
 from sentry.utils import snuba
 
 
 class SnubaTest(TestCase, SnubaTestCase):
-    should_use_snql = False
+    should_use_snql = None
 
     def _insert_event_for_time(self, ts, hash="a" * 32, group_id=None):
         self.snuba_insert(
@@ -56,28 +56,31 @@ class SnubaTest(TestCase, SnubaTestCase):
         ]
 
         self.snuba_insert(events)
-
-        assert (
-            snuba.query(
-                start=now - timedelta(days=1),
-                end=now + timedelta(days=1),
-                groupby=["project_id"],
-                filter_keys={"project_id": [self.project.id]},
-                use_snql=self.should_use_snql,
+        snql_option = 1.0 if self.should_use_snql else 0.0
+        with self.options({"snuba.snql.referrer-rate": snql_option}):
+            assert (
+                snuba.query(
+                    start=now - timedelta(days=1),
+                    end=now + timedelta(days=1),
+                    groupby=["project_id"],
+                    filter_keys={"project_id": [self.project.id]},
+                    referrer="testing.test" if self.should_use_snql else "",
+                )
+                == {self.project.id: 1}
             )
-            == {self.project.id: 1}
-        )
 
     def test_fail(self) -> None:
         now = datetime.now()
         with pytest.raises(snuba.SnubaError):
-            snuba.query(
-                start=now - timedelta(days=1),
-                end=now + timedelta(days=1),
-                filter_keys={"project_id": [self.project.id]},
-                groupby=[")("],
-                use_snql=self.should_use_snql,
-            )
+            snql_option = 1.0 if self.should_use_snql else 0.0
+            with self.options({"snuba.snql.referrer-rate": snql_option}):
+                snuba.query(
+                    start=now - timedelta(days=1),
+                    end=now + timedelta(days=1),
+                    filter_keys={"project_id": [self.project.id]},
+                    groupby=[")("],
+                    referrer="testing.test" if self.should_use_snql else "",
+                )
 
     def test_organization_retention_respected(self) -> None:
         base_time = datetime.utcnow()
@@ -87,13 +90,15 @@ class SnubaTest(TestCase, SnubaTestCase):
 
         def _get_event_count():
             # attempt to query back 90 days
-            return snuba.query(
-                start=base_time - timedelta(days=90),
-                end=base_time + timedelta(days=1),
-                groupby=["project_id"],
-                filter_keys={"project_id": [self.project.id]},
-                use_snql=self.should_use_snql,
-            )
+            snql_option = 1.0 if self.should_use_snql else 0.0
+            with self.options({"snuba.snql.referrer-rate": snql_option}):
+                return snuba.query(
+                    start=base_time - timedelta(days=90),
+                    end=base_time + timedelta(days=1),
+                    groupby=["project_id"],
+                    filter_keys={"project_id": [self.project.id]},
+                    referrer="testing.test" if self.should_use_snql else "",
+                )
 
         assert _get_event_count() == {self.project.id: 2}
         with self.options({"system.event-retention-days": 1}):
@@ -103,13 +108,31 @@ class SnubaTest(TestCase, SnubaTestCase):
         base_time = datetime.utcnow()
 
         with self.options({"system.event-retention-days": 1}):
+            snql_option = 1.0 if self.should_use_snql else 0.0
+            with self.options({"snuba.snql.referrer-rate": snql_option}):
+                assert (
+                    snuba.query(
+                        start=base_time - timedelta(days=90),
+                        end=base_time - timedelta(days=60),
+                        groupby=["project_id"],
+                        filter_keys={"project_id": [self.project.id]},
+                        referrer="testing.test" if self.should_use_snql else "",
+                    )
+                    == {}
+                )
+
+    def test_should_use_snql(self) -> None:
+        base_time = datetime.utcnow()
+
+        with self.options({"snuba.snql.snql_only": 1.0}):
             assert (
                 snuba.query(
-                    start=base_time - timedelta(days=90),
-                    end=base_time - timedelta(days=60),
+                    start=base_time - timedelta(days=1),
+                    end=base_time,
+                    aggregations=[["count", None, "count"]],
                     groupby=["project_id"],
                     filter_keys={"project_id": [self.project.id]},
-                    use_snql=self.should_use_snql,
+                    referrer="sessions.stability-sort",
                 )
                 == {}
             )

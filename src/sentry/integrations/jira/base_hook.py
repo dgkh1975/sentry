@@ -1,7 +1,7 @@
 from django.views.generic import View
 
-from sentry.web.helpers import render_to_response
 from sentry import options
+from sentry.web.helpers import render_to_response
 
 
 class JiraBaseHook(View):
@@ -12,6 +12,6 @@ class JiraBaseHook(View):
             self.request.GET.get("xdm_e"),
             options.get("system.url-prefix"),
         ]
-        sources_string = " ".join([s for s in sources if s])  # Filter out None
+        sources_string = " ".join(s for s in sources if s)  # Filter out None
         response["Content-Security-Policy"] = "frame-ancestors 'self' %s" % sources_string
         return response

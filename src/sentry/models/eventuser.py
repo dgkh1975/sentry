@@ -5,11 +5,10 @@ from operator import or_
 from django.db import models
 from django.utils import timezone
 
+from sentry.constants import MAX_EMAIL_FIELD_LENGTH
 from sentry.db.models import BoundedPositiveIntegerField, Model, sane_repr
 from sentry.utils.datastructures import BidirectionalMapping
 from sentry.utils.hashlib import md5_text
-from sentry.constants import MAX_EMAIL_FIELD_LENGTH
-
 
 # The order of these keys are significant to also indicate priority
 # when used in hashing and determining uniqueness. If you change the order
@@ -22,7 +21,7 @@ KEYWORD_MAP = BidirectionalMapping(
 
 
 class EventUser(Model):
-    __core__ = False
+    __include_in_export__ = False
 
     project_id = BoundedPositiveIntegerField(db_index=True)
     hash = models.CharField(max_length=32)

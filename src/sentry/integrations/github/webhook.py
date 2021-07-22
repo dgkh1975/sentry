@@ -1,15 +1,16 @@
-import dateutil.parser
 import hashlib
 import hmac
 import logging
 
+import dateutil.parser
 from django.db import IntegrityError, transaction
 from django.http import HttpResponse
+from django.utils import timezone
 from django.utils.crypto import constant_time_compare
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import View
-from django.utils import timezone
+
 from sentry import options
 from sentry.constants import ObjectStatus
 from sentry.models import (
@@ -21,9 +22,9 @@ from sentry.models import (
     PullRequest,
     Repository,
 )
+from sentry.shared_integrations.exceptions import ApiError
 from sentry.utils import json
 
-from sentry.shared_integrations.exceptions import ApiError
 from .repository import GitHubRepositoryProvider
 
 logger = logging.getLogger("sentry.webhooks")
@@ -75,6 +76,11 @@ class Webhook:
 
         Assumes a 'repository' key in event payload, with certain subkeys.
         Rework this if that stops being a safe assumption.
+
+        XXX(meredith): In it's current state, this tends to cause a lot of
+        IntegrityErrors when we try to update the repo. Those would need to
+        be handled should we decided to add this back in. Keeping the method
+        for now, even though it's not currently used.
         """
 
         name_from_event = event["repository"]["full_name"]
@@ -163,9 +169,6 @@ class PushEventWebhook(Webhook):
         return GitHubRepositoryProvider.should_ignore_commit(commit["message"])
 
     def _handle(self, integration, event, organization, repo, host=None):
-        # while we're here, make sure repo data is up to date
-        self.update_repo_data(repo, event)
-
         authors = {}
         client = integration.get_installation(organization_id=organization.id).get_client()
         gh_username_cache = {}
@@ -308,9 +311,6 @@ class PullRequestEventWebhook(Webhook):
         return options.get("github-app.id")
 
     def _handle(self, integration, event, organization, repo, host=None):
-        # while we're here, make sure repo data is up to date
-        self.update_repo_data(repo, event)
-
         pull_request = event["pull_request"]
         number = pull_request["number"]
         title = pull_request["title"]
@@ -347,17 +347,14 @@ class PullRequestEventWebhook(Webhook):
                 organization_id=organization.id, external_id=self.get_external_id(user["login"])
             )
         except CommitAuthor.DoesNotExist:
-            try:
-                author = CommitAuthor.objects.get(
-                    organization_id=organization.id, email=author_email
-                )
-            except CommitAuthor.DoesNotExist:
-                author = CommitAuthor.objects.create(
-                    organization_id=organization.id,
-                    email=author_email,
-                    external_id=self.get_external_id(user["login"]),
-                    name=user["login"][:128],
-                )
+            author, _created = CommitAuthor.objects.get_or_create(
+                organization_id=organization.id,
+                email=author_email,
+                defaults={
+                    "name": user["login"][:128],
+                    "external_id": self.get_external_id(user["login"]),
+                },
+            )
 
         try:
             PullRequest.create_or_save(

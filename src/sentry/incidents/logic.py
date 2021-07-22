@@ -7,9 +7,8 @@ from django.db.models.signals import post_save
 from django.utils import timezone
 
 from sentry import analytics, quotas
-from sentry.api.event_search import get_filter, resolve_field
 from sentry.auth.access import SystemAccess
-from sentry.constants import SentryAppInstallationStatus, SentryAppStatus
+from sentry.constants import SentryAppInstallationStatus
 from sentry.incidents import tasks
 from sentry.incidents.models import (
     AlertRule,
@@ -24,35 +23,34 @@ from sentry.incidents.models import (
     IncidentActivity,
     IncidentActivityType,
     IncidentProject,
-    IncidentSnapshot,
-    IncidentTrigger,
-    PendingIncidentSnapshot,
     IncidentSeen,
+    IncidentSnapshot,
     IncidentStatus,
     IncidentStatusMethod,
     IncidentSubscription,
+    IncidentTrigger,
+    PendingIncidentSnapshot,
     TimeSeriesSnapshot,
     TriggerStatus,
 )
-from sentry.models import Integration, Project, PagerDutyService, SentryApp
+from sentry.models import Integration, PagerDutyService, Project, SentryApp
+from sentry.search.events.fields import resolve_field
+from sentry.search.events.filter import get_filter
+from sentry.shared_integrations.exceptions import DuplicateDisplayNameError
 from sentry.snuba.dataset import Dataset
 from sentry.snuba.models import QueryDatasets
 from sentry.snuba.subscriptions import (
     bulk_create_snuba_subscriptions,
-    bulk_enable_snuba_subscriptions,
-    bulk_disable_snuba_subscriptions,
     bulk_delete_snuba_subscriptions,
+    bulk_disable_snuba_subscriptions,
+    bulk_enable_snuba_subscriptions,
     create_snuba_query,
     update_snuba_query,
 )
 from sentry.snuba.tasks import build_snuba_filter
 from sentry.utils.compat import zip
 from sentry.utils.dates import to_timestamp
-from sentry.utils.snuba import bulk_raw_query, is_measurement, SnubaQueryParams, SnubaTSResult
-from sentry.shared_integrations.exceptions import (
-    DuplicateDisplayNameError,
-)
-
+from sentry.utils.snuba import SnubaQueryParams, SnubaTSResult, bulk_raw_query, is_measurement
 
 # We can return an incident as "windowed" which returns a range of points around the start of the incident
 # It attempts to center the start of the incident, only showing earlier data if there isn't enough time
@@ -1387,19 +1385,6 @@ def get_available_action_integrations_for_org(organization):
         if registration.integration_provider is not None
     ]
     return Integration.objects.filter(organizations=organization, provider__in=providers)
-
-
-def get_alertable_sentry_apps(organization_id, with_metric_alerts=False):
-    query = SentryApp.objects.filter(
-        installations__organization_id=organization_id,
-        is_alertable=True,
-        installations__status=SentryAppInstallationStatus.INSTALLED,
-        installations__date_deleted=None,
-    )
-
-    if with_metric_alerts:
-        query = query.exclude(status=SentryAppStatus.PUBLISHED)
-    return query.distinct()
 
 
 def get_pagerduty_services(organization, integration_id):

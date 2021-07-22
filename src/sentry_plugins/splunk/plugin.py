@@ -17,14 +17,14 @@ For more details on the payload: http://dev.splunk.com/view/event-collector/SP-C
 import logging
 
 from sentry import tagstore
+from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry.plugins.bases.data_forwarding import DataForwardingPlugin
+from sentry.shared_integrations.exceptions import ApiError, ApiHostError, ApiTimeoutError
 from sentry.utils import metrics
 from sentry.utils.hashlib import md5_text
-from sentry.shared_integrations.exceptions import ApiHostError, ApiTimeoutError, ApiError
-from sentry_plugins.base import CorePluginMixin
-from sentry.plugins.bases.data_forwarding import DataForwardingPlugin
-from sentry_plugins.utils import get_secret_field_config
 from sentry_plugins.anonymizeip import anonymize_ip
-from sentry.integrations import FeatureDescription, IntegrationFeatures
+from sentry_plugins.base import CorePluginMixin
+from sentry_plugins.utils import get_secret_field_config
 
 from .client import SplunkApiClient
 
@@ -252,8 +252,8 @@ class SplunkPlugin(CorePluginMixin, DataForwardingPlugin):
                 # Just log and return.
                 return False
 
-            if isinstance(exc, ApiError) and exc.code == 403:
-                # 403s are not errors or actionable for us do not re-raise
+            if isinstance(exc, ApiError) and 401 <= exc.code <= 404:
+                # Most 4xxs are not errors or actionable for us do not re-raise
                 return False
 
             raise

@@ -1,21 +1,17 @@
+from urllib.parse import urlencode
+
 from botocore.exceptions import ClientError
 from django.http import HttpResponse
-from urllib.parse import urlencode
 
 from sentry.api.serializers import serialize
 from sentry.integrations.aws_lambda import AwsLambdaIntegrationProvider
 from sentry.integrations.aws_lambda.utils import ALL_AWS_REGIONS
-from sentry.models import (
-    Integration,
-    OrganizationIntegration,
-    ProjectKey,
-)
-from sentry.testutils import IntegrationTestCase
-from sentry.utils.compat import map
-from sentry.utils.compat.mock import patch, ANY, MagicMock
-from sentry.testutils.helpers.faux import Mock
+from sentry.models import Integration, OrganizationIntegration, ProjectKey
 from sentry.pipeline import PipelineView
-
+from sentry.testutils import IntegrationTestCase
+from sentry.testutils.helpers.faux import Mock
+from sentry.utils.compat import map
+from sentry.utils.compat.mock import ANY, MagicMock, patch
 
 arn = (
     "arn:aws:cloudformation:us-east-2:599817902985:stack/"
@@ -392,6 +388,132 @@ class AwsLambdaIntegrationTest(IntegrationTestCase):
 
         failures = [
             {"name": "lambdaB", "error": "Invalid role associated with the lambda function"}
+        ]
+
+        mock_react_view.assert_called_with(
+            ANY, "awsLambdaFailureDetails", {"lambdaFunctionFailures": failures, "successCount": 0}
+        )
+
+    @patch("sentry.integrations.aws_lambda.integration.get_supported_functions")
+    @patch("sentry.integrations.aws_lambda.integration.gen_aws_client")
+    @patch.object(PipelineView, "render_react_view", return_value=HttpResponse())
+    def test_lambda_setup_layer_too_many_requests_exception(
+        self, mock_react_view, mock_gen_aws_client, mock_get_supported_functions
+    ):
+        class MockException(Exception):
+            pass
+
+        too_many_requests_err = (
+            "An error occurred (TooManyRequestsException) when calling the "
+            "UpdateFunctionConfiguration operation (reached max retries: 4): "
+            "Rate exceeded"
+        )
+        mock_client = Mock()
+        mock_gen_aws_client.return_value = mock_client
+        mock_client.update_function_configuration = MagicMock(
+            side_effect=Exception(too_many_requests_err)
+        )
+        mock_client.describe_account = MagicMock(return_value={"Account": {"Name": "my_name"}})
+        mock_client.exceptions = MagicMock()
+        mock_client.exceptions.ResourceConflictException = MockException
+
+        mock_get_supported_functions.return_value = [
+            {
+                "FunctionName": "lambdaB",
+                "Runtime": "nodejs10.x",
+                "FunctionArn": "arn:aws:lambda:us-east-2:599817902985:function:lambdaB",
+            },
+        ]
+
+        aws_external_id = "12-323"
+        self.pipeline.state.step_index = 2
+        self.pipeline.state.data = {
+            "region": region,
+            "account_number": account_number,
+            "aws_external_id": aws_external_id,
+            "project_id": self.projectA.id,
+        }
+
+        resp = self.client.post(
+            self.setup_path,
+            {"lambdaB": True},
+            format="json",
+            HTTP_ACCEPT="application/json",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+
+        assert resp.status_code == 200
+        assert not Integration.objects.filter(provider=self.provider.key).exists()
+
+        failures = [
+            {
+                "name": "lambdaB",
+                "error": "Something went wrong! Please enable function manually after installation",
+            }
+        ]
+
+        mock_react_view.assert_called_with(
+            ANY, "awsLambdaFailureDetails", {"lambdaFunctionFailures": failures, "successCount": 0}
+        )
+
+    @patch("sentry.integrations.aws_lambda.integration.get_supported_functions")
+    @patch("sentry.integrations.aws_lambda.integration.gen_aws_client")
+    @patch.object(PipelineView, "render_react_view", return_value=HttpResponse())
+    def test_lambda_setup_layer_env_vars_limit_exceeded_exception(
+        self, mock_react_view, mock_gen_aws_client, mock_get_supported_functions
+    ):
+        class MockException(Exception):
+            pass
+
+        env_vars_size_limit_err = (
+            "An error occurred (InvalidParameterValueException) when calling the "
+            "UpdateFunctionConfiguration operation: Lambda was unable to configure "
+            "your environment variables because the environment variables you have "
+            "provided exceeded the 4KB limit. String measured: {'MESSAGE':'This is production "
+            "environment','TARGET_ENV' :'pre-production','IS_SERVERLESS':'true','STAGE':'pre-prod'"
+        )
+        mock_client = Mock()
+        mock_gen_aws_client.return_value = mock_client
+        mock_client.update_function_configuration = MagicMock(
+            side_effect=Exception(env_vars_size_limit_err)
+        )
+        mock_client.describe_account = MagicMock(return_value={"Account": {"Name": "my_name"}})
+        mock_client.exceptions = MagicMock()
+        mock_client.exceptions.ResourceConflictException = MockException
+
+        mock_get_supported_functions.return_value = [
+            {
+                "FunctionName": "lambdaB",
+                "Runtime": "nodejs10.x",
+                "FunctionArn": "arn:aws:lambda:us-east-2:599817902985:function:lambdaB",
+            },
+        ]
+
+        aws_external_id = "12-323"
+        self.pipeline.state.step_index = 2
+        self.pipeline.state.data = {
+            "region": region,
+            "account_number": account_number,
+            "aws_external_id": aws_external_id,
+            "project_id": self.projectA.id,
+        }
+
+        resp = self.client.post(
+            self.setup_path,
+            {"lambdaB": True},
+            format="json",
+            HTTP_ACCEPT="application/json",
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+        )
+
+        assert resp.status_code == 200
+        assert not Integration.objects.filter(provider=self.provider.key).exists()
+
+        failures = [
+            {
+                "name": "lambdaB",
+                "error": "Environment variables size limit of 4KB was exceeded",
+            }
         ]
 
         mock_react_view.assert_called_with(

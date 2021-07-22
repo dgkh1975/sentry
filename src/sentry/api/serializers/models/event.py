@@ -38,7 +38,7 @@ def get_tags_with_meta(event):
         raw_tags = event.tags
 
     tags = sorted(
-        [
+        (
             {
                 "key": kv[0] and kv[0].split("sentry:", 1)[-1],
                 "value": kv[1],
@@ -52,7 +52,7 @@ def get_tags_with_meta(event):
             }
             for i, kv in enumerate(raw_tags)
             if kv is not None
-        ],
+        ),
         key=lambda x: x["key"] if x["key"] is not None else "",
     )
 
@@ -285,6 +285,7 @@ class EventSerializer(Serializer):
             "startTimestamp": obj.data.get("start_timestamp"),
             "endTimestamp": obj.data.get("timestamp"),
             "measurements": obj.data.get("measurements"),
+            "breakdowns": obj.data.get("breakdowns"),
         }
 
     def __serialize_error_attrs(self, attrs, obj):
@@ -295,7 +296,7 @@ class EventSerializer(Serializer):
             "crashFile": attrs["crash_file"],
             "culprit": obj.culprit,
             "dateCreated": obj.datetime,
-            "fingerprints": obj.get_hashes()[0],
+            "fingerprints": obj.get_hashes().hashes,
             "groupingConfig": obj.get_grouping_config(),
         }
 

@@ -1,14 +1,14 @@
-from sentry.utils.compat.mock import patch, Mock
 from django.http import QueryDict
 
-from sentry.models import add_group_to_inbox, GroupInbox, GroupInboxReason, GroupStatus
 from sentry.api.helpers.group_index import (
-    validate_search_filter_permissions,
     ValidationError,
     update_groups,
+    validate_search_filter_permissions,
 )
 from sentry.api.issue_search import parse_search_query
+from sentry.models import GroupInbox, GroupInboxReason, GroupStatus, add_group_to_inbox
 from sentry.testutils import TestCase
+from sentry.utils.compat.mock import Mock, patch
 
 
 class ValidateSearchFilterPermissionsTest(TestCase):
@@ -151,21 +151,20 @@ class UpdateGroupsTest(TestCase):
 
     @patch("sentry.signals.issue_mark_reviewed.send_robust")
     def test_mark_reviewed_group(self, send_robust):
-        with self.feature("organizations:inbox"):
-            group = self.create_group()
-            add_group_to_inbox(group, GroupInboxReason.NEW)
+        group = self.create_group()
+        add_group_to_inbox(group, GroupInboxReason.NEW)
 
-            request = self.make_request(user=self.user, method="GET")
-            request.user = self.user
-            request.data = {"inbox": False}
-            request.GET = QueryDict(query_string=f"id={group.id}")
+        request = self.make_request(user=self.user, method="GET")
+        request.user = self.user
+        request.data = {"inbox": False}
+        request.GET = QueryDict(query_string=f"id={group.id}")
 
-            search_fn = Mock()
-            update_groups(
-                request, request.GET.getlist("id"), [self.project], self.organization.id, search_fn
-            )
+        search_fn = Mock()
+        update_groups(
+            request, request.GET.getlist("id"), [self.project], self.organization.id, search_fn
+        )
 
-            group.refresh_from_db()
+        group.refresh_from_db()
 
-            assert not GroupInbox.objects.filter(group=group).exists()
-            assert send_robust.called
+        assert not GroupInbox.objects.filter(group=group).exists()
+        assert send_robust.called

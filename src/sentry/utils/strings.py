@@ -5,6 +5,7 @@ import string
 import zlib
 
 from django.utils.encoding import force_text, smart_text
+
 from sentry.utils.compat import map
 
 _word_sep_re = re.compile(r"[\s.;,_-]+", re.UNICODE)
@@ -99,7 +100,7 @@ def soft_hyphenate(value, length, hyphen="\u00ad"):
 def soft_break(value, length, process=lambda chunk: chunk):
     """
     Encourages soft breaking of text values above a maximum length by adding
-    zero-width spaces after common delimeters, as well as soft-hyphenating long
+    zero-width spaces after common delimiters, as well as soft-hyphenating long
     identifiers.
     """
     delimiters = re.compile(r"([{}]+)".format("".join(map(re.escape, ",.$:/+@!?()<>[]{}"))))

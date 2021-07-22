@@ -2,7 +2,7 @@ import warnings
 from collections import defaultdict
 
 from django.conf import settings
-from django.db import connections, IntegrityError, models, router, transaction
+from django.db import IntegrityError, connections, models, router, transaction
 from django.utils import timezone
 from django.utils.translation import ugettext_lazy as _
 
@@ -25,14 +25,14 @@ class TeamManager(BaseManager):
         """
         from sentry.auth.superuser import is_active_superuser
         from sentry.models import (
+            OrganizationMember,
             OrganizationMemberTeam,
             Project,
             ProjectStatus,
             ProjectTeam,
-            OrganizationMember,
         )
 
-        if not user.is_authenticated():
+        if not user.is_authenticated:
             return []
 
         base_team_qs = self.filter(organization=organization, status=TeamStatus.VISIBLE)
@@ -98,7 +98,7 @@ class Team(Model):
     A team represents a group of individuals which maintain ownership of projects.
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     organization = FlexibleForeignKey("sentry.Organization")
     slug = models.SlugField()
@@ -137,7 +137,7 @@ class Team(Model):
 
     @property
     def member_set(self):
-        """ :returns a QuerySet of all Users that belong to this Team """
+        """:returns a QuerySet of all Users that belong to this Team"""
         return self.organization.member_set.filter(
             organizationmemberteam__team=self,
             organizationmemberteam__is_active=True,
@@ -245,3 +245,8 @@ class Team(Model):
 
     def get_audit_log_data(self):
         return {"id": self.id, "slug": self.slug, "name": self.name, "status": self.status}
+
+    def get_projects(self):
+        from sentry.models import Project
+
+        return Project.objects.get_for_team_ids({self.id})

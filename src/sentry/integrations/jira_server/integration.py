@@ -1,29 +1,29 @@
 import logging
-
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
-from cryptography.hazmat.backends import default_backend
-from django import forms
-from django.core.urlresolvers import reverse
-from django.core.validators import URLValidator
-from django.utils.translation import ugettext as _
-from django.views.decorators.csrf import csrf_exempt
 from urllib.parse import urlparse
 
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from django import forms
+from django.core.validators import URLValidator
+from django.urls import reverse
+from django.utils.translation import ugettext as _
+from django.views.decorators.csrf import csrf_exempt
+
 from sentry.integrations import (
-    IntegrationFeatures,
-    IntegrationProvider,
-    IntegrationMetadata,
     FeatureDescription,
+    IntegrationFeatures,
+    IntegrationMetadata,
+    IntegrationProvider,
 )
-from sentry.shared_integrations.exceptions import IntegrationError, ApiError
 from sentry.integrations.jira import JiraIntegration
 from sentry.pipeline import PipelineView
+from sentry.shared_integrations.exceptions import ApiError, IntegrationError
 from sentry.utils.decorators import classproperty
 from sentry.utils.hashlib import sha1_text
 from sentry.utils.http import absolute_uri
 from sentry.web.helpers import render_to_response
-from .client import JiraServer, JiraServerSetupClient, JiraServerClient
 
+from .client import JiraServer, JiraServerClient, JiraServerSetupClient
 
 logger = logging.getLogger("sentry.integrations.jira_server")
 
@@ -72,7 +72,7 @@ metadata = IntegrationMetadata(
     features=FEATURE_DESCRIPTIONS,
     author="The Sentry Team",
     noun=_("Installation"),
-    issue_url="https://github.com/getsentry/sentry/issues/new?assignees=&labels=Component:%20Integrations&template=bug_report.md&title=Jira%20Server%20Integration%20Problem",
+    issue_url="https://github.com/getsentry/sentry/issues/new?assignees=&labels=Component:%20Integrations&template=bug.yml&title=Jira%20Server%20Integration%20Problem",
     source_url="https://github.com/getsentry/sentry/tree/master/src/sentry/integrations/jira_server",
     aspects={"alerts": [setup_alert]},
 )

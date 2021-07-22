@@ -5,7 +5,6 @@ from sentry.db.models import FlexibleForeignKey, Model, sane_repr
 from sentry.db.models.fields import EncryptedPickledObjectField
 from sentry.db.models.manager import OptionManager
 
-
 option_scope_error = "this is not a supported use case, scope to project OR organization"
 
 
@@ -95,7 +94,7 @@ class UserOptionManager(OptionManager):
         )
 
 
-# TODO(dcramer): the NULL UNIQUE constraint here isnt valid, and instead has to
+# TODO(dcramer): the NULL UNIQUE constraint here isn't valid, and instead has to
 # be manually replaced in the database. We should restructure this model.
 class UserOption(Model):
     """
@@ -146,7 +145,7 @@ class UserOption(Model):
         - unused
     """
 
-    __core__ = True
+    __include_in_export__ = True
 
     user = FlexibleForeignKey(settings.AUTH_USER_MODEL)
     project = FlexibleForeignKey("sentry.Project", null=True)

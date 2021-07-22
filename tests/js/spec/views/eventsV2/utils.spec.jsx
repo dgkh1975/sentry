@@ -53,6 +53,24 @@ describe('decodeColumnOrder', function () {
     });
   });
 
+  it('can decode span op breakdown fields', function () {
+    const results = decodeColumnOrder([{field: 'spans.foo', width: 123}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'spans.foo',
+      name: 'spans.foo',
+      column: {
+        kind: 'field',
+        field: 'spans.foo',
+      },
+      width: 123,
+      isSortable: false,
+      type: 'duration',
+    });
+  });
+
   it('can decode aggregate functions with no arguments', function () {
     let results = decodeColumnOrder([{field: 'count()', width: 123}]);
 
@@ -62,7 +80,7 @@ describe('decodeColumnOrder', function () {
       name: 'count()',
       column: {
         kind: 'function',
-        function: ['count', '', undefined],
+        function: ['count', '', undefined, undefined],
       },
       width: 123,
       isSortable: true,
@@ -86,7 +104,7 @@ describe('decodeColumnOrder', function () {
       name: 'avg(transaction.duration)',
       column: {
         kind: 'function',
-        function: ['avg', 'transaction.duration', undefined],
+        function: ['avg', 'transaction.duration', undefined, undefined],
       },
       width: COL_WIDTH_UNDEFINED,
       isSortable: true,
@@ -106,7 +124,7 @@ describe('decodeColumnOrder', function () {
       name: 'percentile(transaction.duration, 0.65)',
       column: {
         kind: 'function',
-        function: ['percentile', 'transaction.duration', '0.65'],
+        function: ['percentile', 'transaction.duration', '0.65', undefined],
       },
       width: COL_WIDTH_UNDEFINED,
       isSortable: true,
@@ -124,7 +142,7 @@ describe('decodeColumnOrder', function () {
       name: 'avg(measurements.foo)',
       column: {
         kind: 'function',
-        function: ['avg', 'measurements.foo', undefined],
+        function: ['avg', 'measurements.foo', undefined, undefined],
       },
       width: COL_WIDTH_UNDEFINED,
       isSortable: true,
@@ -142,7 +160,43 @@ describe('decodeColumnOrder', function () {
       name: 'percentile(measurements.lcp, 0.65)',
       column: {
         kind: 'function',
-        function: ['percentile', 'measurements.lcp', '0.65'],
+        function: ['percentile', 'measurements.lcp', '0.65', undefined],
+      },
+      width: COL_WIDTH_UNDEFINED,
+      isSortable: true,
+      type: 'duration',
+    });
+  });
+
+  it('can decode elements with aggregate functions using span op breakdowns', function () {
+    const results = decodeColumnOrder([{field: 'avg(spans.foo)'}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'avg(spans.foo)',
+      name: 'avg(spans.foo)',
+      column: {
+        kind: 'function',
+        function: ['avg', 'spans.foo', undefined, undefined],
+      },
+      width: COL_WIDTH_UNDEFINED,
+      isSortable: true,
+      type: 'duration',
+    });
+  });
+
+  it('can decode elements with aggregate functions with multiple arguments using span op breakdowns', function () {
+    const results = decodeColumnOrder([{field: 'percentile(spans.lcp, 0.65)'}]);
+
+    expect(Array.isArray(results)).toBeTruthy();
+
+    expect(results[0]).toEqual({
+      key: 'percentile(spans.lcp, 0.65)',
+      name: 'percentile(spans.lcp, 0.65)',
+      column: {
+        kind: 'function',
+        function: ['percentile', 'spans.lcp', '0.65', undefined],
       },
       width: COL_WIDTH_UNDEFINED,
       isSortable: true,
@@ -416,6 +470,38 @@ describe('getExpandedResults()', function () {
     const result = getExpandedResults(view, {some_tag: 'value'}, {});
     expect(result.fields).toEqual([]);
     expect(result.query).toEqual('some_tag:value');
+  });
+
+  it('removes equations on aggregates', () => {
+    const view = new EventView({
+      ...state,
+      fields: [
+        {field: 'count()'},
+        {field: 'equation|count() / 2'},
+        {field: 'equation|(count() - count()) + 5'},
+      ],
+    });
+    const result = getExpandedResults(view, {});
+    expect(result.fields).toEqual([
+      {
+        field: 'id',
+        width: -1,
+      },
+    ]);
+  });
+
+  it('keeps equations without aggregates', () => {
+    const view = new EventView({
+      ...state,
+      fields: [{field: 'count()'}, {field: 'equation|transaction.duration / 2'}],
+    });
+    const result = getExpandedResults(view, {});
+    expect(result.fields).toEqual([
+      {
+        field: 'equation|transaction.duration / 2',
+        width: -1,
+      },
+    ]);
   });
 
   it('applies array value conditions from event data', () => {

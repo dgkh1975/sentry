@@ -1,3 +1,5 @@
+from typing import Iterable
+
 from sentry.models import (
     Environment,
     EnvironmentProject,
@@ -11,13 +13,11 @@ from sentry.models import (
     ReleaseProject,
     ReleaseProjectEnvironment,
     Rule,
+    User,
 )
-from sentry.models.integration import ExternalProviders
-from sentry.notifications.types import (
-    NotificationSettingTypes,
-    NotificationSettingOptionValues,
-)
+from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
 from sentry.testutils import TestCase
+from sentry.types.integrations import ExternalProviders
 from sentry.utils.compat import zip
 
 
@@ -297,11 +297,16 @@ class CopyProjectSettingsTest(TestCase):
 
 
 class FilterToSubscribedUsersTest(TestCase):
-    def run_test(self, users, expected_users):
-        assert self.project.filter_to_subscribed_users(users) == expected_users
+    def run_test(self, users: Iterable[User], expected_users: Iterable[User]):
+        assert (
+            NotificationSetting.objects.filter_to_subscribed_users(self.project, users)[
+                ExternalProviders.EMAIL
+            ]
+            == expected_users
+        )
 
     def test(self):
-        assert self.project.filter_to_subscribed_users([self.user]) == [self.user]
+        self.run_test([self.user], {self.user})
 
     def test_global_enabled(self):
         user = self.create_user()
@@ -311,7 +316,7 @@ class FilterToSubscribedUsersTest(TestCase):
             NotificationSettingOptionValues.ALWAYS,
             user=user,
         )
-        self.run_test([user], [user])
+        self.run_test({user}, {user})
 
     def test_global_disabled(self):
         user = self.create_user()
@@ -321,7 +326,7 @@ class FilterToSubscribedUsersTest(TestCase):
             NotificationSettingOptionValues.NEVER,
             user=user,
         )
-        self.run_test([user], [])
+        self.run_test({user}, set())
 
     def test_project_enabled(self):
         user = self.create_user()
@@ -338,7 +343,7 @@ class FilterToSubscribedUsersTest(TestCase):
             user=user,
             project=self.project,
         )
-        self.run_test([user], [user])
+        self.run_test({user}, {user})
 
     def test_project_disabled(self):
         user = self.create_user()
@@ -355,7 +360,7 @@ class FilterToSubscribedUsersTest(TestCase):
             user=user,
             project=self.project,
         )
-        self.run_test([user], [])
+        self.run_test({user}, set())
 
     def test_mixed(self):
         user_global_enabled = self.create_user()
@@ -404,11 +409,11 @@ class FilterToSubscribedUsersTest(TestCase):
             project=self.project,
         )
         self.run_test(
-            [
+            {
                 user_global_enabled,
                 user_global_disabled,
                 user_project_enabled,
                 user_project_disabled,
-            ],
-            [user_global_enabled, user_project_enabled],
+            },
+            {user_global_enabled, user_project_enabled},
         )

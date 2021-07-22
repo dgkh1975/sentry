@@ -1,13 +1,13 @@
 from sentry.logging import LoggingFormat
 from sentry.options import (
+    FLAG_ALLOW_EMPTY,
     FLAG_IMMUTABLE,
     FLAG_NOSTORE,
     FLAG_PRIORITIZE_DISK,
     FLAG_REQUIRED,
-    FLAG_ALLOW_EMPTY,
     register,
 )
-from sentry.utils.types import Bool, Dict, String, Sequence, Int
+from sentry.utils.types import Any, Bool, Dict, Int, Sequence, String
 
 # Cache
 # register('cache.backend', flags=FLAG_NOSTORE)
@@ -110,11 +110,30 @@ register(
     flags=FLAG_ALLOW_EMPTY | FLAG_PRIORITIZE_DISK,
 )
 
+# The ratio of requests for which the new stackwalking method should be compared against the old one
+register("symbolicator.compare_stackwalking_methods_rate", default=0.0)
+
+# Killswitch for symbolication sources, based on a list of source IDs. Meant to be used in extreme
+# situations where it is preferable to break symbolication in a few places as opposed to letting
+# it break everywhere.
+register("symbolicator.ignored_sources", type=Sequence, default=(), flags=FLAG_ALLOW_EMPTY)
+
 # Backend chart rendering via chartcuterie
 register("chart-rendering.enabled", default=False, flags=FLAG_ALLOW_EMPTY | FLAG_PRIORITIZE_DISK)
 register(
     "chart-rendering.chartcuterie",
     default={"url": "http://localhost:7901"},
+    flags=FLAG_ALLOW_EMPTY | FLAG_PRIORITIZE_DISK,
+)
+# Leaving these empty will use the same storage driver configured for
+# Filestore
+register(
+    "chart-rendering.storage.backend", default=None, flags=FLAG_ALLOW_EMPTY | FLAG_PRIORITIZE_DISK
+)
+register(
+    "chart-rendering.storage.options",
+    type=Dict,
+    default=None,
     flags=FLAG_ALLOW_EMPTY | FLAG_PRIORITIZE_DISK,
 )
 
@@ -193,6 +212,8 @@ register("snuba.search.max-chunk-size", default=2000)
 register("snuba.search.max-total-chunk-time-seconds", default=30.0)
 register("snuba.search.hits-sample-size", default=100)
 register("snuba.track-outcomes-sample-rate", default=0.0)
+register("snuba.snql.referrer-rate", default=0.0)
+register("snuba.snql.snql_only", default=0.0)
 
 # The percentage of tagkeys that we want to cache. Set to 1.0 in order to cache everything, <=0.0 to stop caching
 register("snuba.tagstore.cache-tagkeys-rate", default=0.0, flags=FLAG_PRIORITIZE_DISK)
@@ -271,9 +292,6 @@ register("discover2.max_tags_to_combine", default=3, flags=FLAG_PRIORITIZE_DISK)
 # Enables setting a sampling rate when producing the tag facet.
 register("discover2.tags_facet_enable_sampling", default=True, flags=FLAG_PRIORITIZE_DISK)
 
-# Enables setting a sampling rate when producing the tag facet.
-register("discover2.tags_performance_facet_sample_rate", default=0.1)
-
 # Killswitch for datascrubbing after stacktrace processing. Set to False to
 # disable datascrubbers.
 register("processing.can-use-scrubbers", default=True)
@@ -298,7 +316,47 @@ register("store.race-free-group-creation-force-disable", default=False)
 
 
 # Killswitch for dropping events if they were to create groups
-register("store.load-shed-group-creation-projects", type=Sequence, default=[])
+register("store.load-shed-group-creation-projects", type=Any, default=[])
 
-# Killswitch for dropping events in ingest consumer or really anywhere
-register("store.load-shed-pipeline-projects", type=Sequence, default=[])
+# Killswitch for dropping events in ingest consumer
+register("store.load-shed-pipeline-projects", type=Any, default=[])
+
+# Switch for more performant project counter incr
+register("store.projectcounter-modern-upsert-sample-rate", default=0.0)
+
+# Run an experimental grouping config in background for performance analysis
+register("store.background-grouping-config-id", default=None)
+
+# Fraction of events that will pass through background grouping
+register("store.background-grouping-sample-rate", default=0.0)
+
+# True if background grouping should run before secondary and primary grouping
+register("store.background-grouping-before", default=False)
+
+# Killswitch for dropping events in ingest consumer (after parsing them)
+register("store.load-shed-parsed-pipeline-projects", type=Any, default=[])
+
+# Killswitch for dropping events in process_event
+register("store.load-shed-process-event-projects", type=Any, default=[])
+
+# Killswitch for dropping events in symbolicate_event
+register("store.load-shed-symbolicate-event-projects", type=Any, default=[])
+
+# Store release files bundled as zip files
+register("processing.save-release-archives", default=False)  # unused
+
+# Minimum number of files in an archive. Small archives are extracted and its contents
+# are stored as separate release files.
+register("processing.release-archive-min-files", default=10)
+
+# Try to read release artifacts from zip archives
+register("processing.use-release-archives-sample-rate", default=0.0)  # unused
+
+# All Relay options (statically authenticated Relays can be registered here)
+register("relay.static_auth", default={}, flags=FLAG_NOSTORE)
+
+# Write new kafka headers in eventstream
+register("eventstream:kafka-headers", default=False)
+
+# Post process forwarder gets data from Kafka headers
+register("post-process-forwarder:kafka-headers", default=False)

@@ -1,9 +1,10 @@
-from django.db import models
-from django.utils import timezone
 from enum import IntEnum
 
+from django.db import models
+from django.utils import timezone
+
+from sentry.db.models import BoundedPositiveIntegerField, FlexibleForeignKey
 from sentry.models import DefaultFieldsModel, Organization, User
-from sentry.db.models import FlexibleForeignKey, BoundedPositiveIntegerField
 
 
 class DemoOrgStatus(IntEnum):
@@ -35,7 +36,7 @@ DemoOrgStatus._labels = {
 
 
 class DemoOrganization(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     organization = FlexibleForeignKey("sentry.Organization", unique=True)
     status = BoundedPositiveIntegerField(
@@ -54,9 +55,13 @@ class DemoOrganization(DefaultFieldsModel):
         self.date_assigned = timezone.now()
         self.save()
 
+    @classmethod
+    def get_one_pending_org(cls):
+        return cls.objects.filter(status=DemoOrgStatus.PENDING).first()
+
 
 class DemoUser(DefaultFieldsModel):
-    __core__ = False
+    __include_in_export__ = False
 
     user = FlexibleForeignKey("sentry.User", unique=True)
     date_assigned = models.DateTimeField(null=True)

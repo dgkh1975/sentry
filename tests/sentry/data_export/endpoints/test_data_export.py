@@ -1,10 +1,11 @@
 from freezegun import freeze_time
 
-from sentry.data_export.base import ExportStatus, ExportQueryType
+from sentry.data_export.base import ExportQueryType, ExportStatus
 from sentry.data_export.models import ExportedData
 from sentry.search.utils import parse_datetime_string
-from sentry.utils.snuba import MAX_FIELDS
 from sentry.testutils import APITestCase
+from sentry.utils.compat import mock
+from sentry.utils.snuba import MAX_FIELDS
 
 
 class DataExportTest(APITestCase):
@@ -13,17 +14,22 @@ class DataExportTest(APITestCase):
 
     def setUp(self):
         self.user = self.create_user("user1@example.com")
-        self.org = self.create_organization(owner=self.user)
-        self.project = self.create_project(organization=self.org)
+        self.org = self.create_organization(name="Test")
+        self.team = self.create_team(organization=self.org, name="Data Export Team")
+        self.project = self.create_project(
+            organization=self.org, teams=[self.team], name="Data Export Proj"
+        )
+        self.create_member(user=self.user, organization=self.org, teams=[self.team])
         self.login_as(user=self.user)
 
-    def make_payload(self, type, extras=None, overwrite=False):
-        if type == "issue":
+    def make_payload(self, payload_type, extras=None, overwrite=False):
+        payload = {}
+        if payload_type == "issue":
             payload = {
                 "query_type": ExportQueryType.ISSUES_BY_TAG_STR,
                 "query_info": {"env": "test", "project": [self.project.id]},
             }
-        elif type == "discover":
+        elif payload_type == "discover":
             payload = {
                 "query_type": ExportQueryType.DISCOVER_STR,
                 "query_info": {"field": ["id"], "query": "", "project": [self.project.id]},
@@ -135,6 +141,29 @@ class DataExportTest(APITestCase):
         assert response.data == {
             "non_field_errors": [
                 "You can export up to 20 fields at a time. Please delete some and try again."
+            ]
+        }
+
+    def test_export_no_fields(self):
+        """
+        Ensures that if no fields are requested, returns a 400 status code with
+        the corresponding error message.
+        """
+        payload = self.make_payload("discover", {"field": []})
+        with self.feature("organizations:discover-query"):
+            response = self.get_valid_response(self.org.slug, status_code=400, **payload)
+        assert response.data == {"non_field_errors": ["at least one field is required to export"]}
+
+    def test_discover_without_query(self):
+        """
+        Ensurse that we handle export requests without a query, and return a 400 status code
+        """
+        payload = self.make_payload("discover", {"field": ["id"]}, overwrite=True)
+        with self.feature("organizations:discover-query"):
+            response = self.get_valid_response(self.org.slug, status_code=400, **payload)
+        assert response.data == {
+            "non_field_errors": [
+                "query is a required to export, please pass an empty string if you don't want to set one"
             ]
         }
 
@@ -250,3 +279,35 @@ class DataExportTest(APITestCase):
         with self.feature("organizations:discover-query"):
             response = self.get_valid_response(self.org.slug, status_code=400, **payload)
         assert response.data == {"non_field_errors": ["Empty string after 'foo:'"]}
+
+    @mock.patch("sentry.data_export.endpoints.data_export.DiscoverProcessor")
+    def test_export_resolves_empty_project(self, mock_discover_processor):
+        """
+        Ensures that a request to this endpoint returns a 201 if projects
+        is an empty list.
+        """
+        payload = self.make_payload("discover", {"project": []})
+        with self.feature("organizations:discover-query"):
+            self.get_valid_response(self.org.slug, status_code=201, **payload)
+
+        query_info = mock_discover_processor.call_args[1]
+        assert query_info["discover_query"]["project"] == [self.project.id]
+
+        payload = self.make_payload("issue", {"project": None})
+        with self.feature("organizations:discover-query"):
+            self.get_valid_response(self.org.slug, status_code=201, **payload)
+
+        query_info = mock_discover_processor.call_args[1]
+        assert query_info["discover_query"]["project"] == [self.project.id]
+
+    def test_equations(self):
+        """
+        Ensures that equations are handled
+        """
+        payload = self.make_payload("discover", {"field": ["equation|count() / 2", "count()"]})
+        with self.feature(["organizations:discover-query", "organizations:discover-arithmetic"]):
+            response = self.get_valid_response(self.org.slug, status_code=201, **payload)
+        data_export = ExportedData.objects.get(id=response.data["id"])
+        query_info = data_export.query_info
+        assert query_info["field"] == ["count()"]
+        assert query_info["equations"] == ["count() / 2"]

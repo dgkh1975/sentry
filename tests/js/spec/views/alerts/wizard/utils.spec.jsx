@@ -1,5 +1,5 @@
+import {Dataset} from 'app/views/alerts/incidentRules/types';
 import {getAlertTypeFromAggregateDataset} from 'app/views/alerts/wizard/utils';
-import {Dataset} from 'app/views/settings/incidentRules/types';
 
 describe('Wizard utils', function () {
   it('extracts lcp alert', function () {
@@ -71,12 +71,26 @@ describe('Wizard utils', function () {
     ).toEqual('num_errors');
   });
 
-  it('defaults to num_errors', function () {
+  it('defaults to custom', function () {
     expect(
       getAlertTypeFromAggregateDataset({
         aggregate: 'count_unique(tags[sentry:user])',
         dataset: Dataset.TRANSACTIONS,
       })
-    ).toEqual('num_errors');
+    ).toEqual('custom');
+
+    expect(
+      getAlertTypeFromAggregateDataset({
+        aggregate: 'p95(measurements.fp)',
+        dataset: Dataset.TRANSACTIONS,
+      })
+    ).toEqual('custom');
+
+    expect(
+      getAlertTypeFromAggregateDataset({
+        aggregate: 'p95(measurements.ttfb)',
+        dataset: Dataset.TRANSACTIONS,
+      })
+    ).toEqual('custom');
   });
 });

@@ -1,14 +1,7 @@
-from sentry.models import (
-    NotificationSetting,
-    UserEmail,
-    UserOption,
-)
-from sentry.models.integration import ExternalProviders
-from sentry.notifications.types import (
-    NotificationSettingOptionValues,
-    NotificationSettingTypes,
-)
+from sentry.models import NotificationSetting, UserEmail, UserOption
+from sentry.notifications.types import NotificationSettingOptionValues, NotificationSettingTypes
 from sentry.testutils import APITestCase
+from sentry.types.integrations import ExternalProviders
 
 
 class UserNotificationFineTuningTestBase(APITestCase):
@@ -23,7 +16,7 @@ class UserNotificationFineTuningTestBase(APITestCase):
         self.login_as(user=self.user)
 
     def test_invalid_notification_type(self):
-        """ This is run twice because of inheritance. """
+        """This is run twice because of inheritance."""
         self.get_valid_response("me", "invalid", status_code=404)
 
 

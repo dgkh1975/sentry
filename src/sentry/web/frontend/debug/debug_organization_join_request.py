@@ -1,4 +1,4 @@
-from django.core.urlresolvers import reverse
+from django.urls import reverse
 from django.views.generic import View
 
 from sentry.models import Organization
@@ -14,7 +14,7 @@ class DebugOrganizationJoinRequestEmailView(View):
             "organization_name": org.name,
             "email": "test@gmail.com",
             "pending_requests_link": absolute_uri(
-                reverse("sentry-organization-members-requests", args=[org.slug])
+                reverse("sentry-organization-members", args=[org.slug])
             ),
             "settings_link": absolute_uri(reverse("sentry-organization-settings", args=[org.slug])),
         }

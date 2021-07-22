@@ -1,14 +1,25 @@
 ---
-created: '2021-02-15T18:20:10.569342Z'
+created: '2021-06-30T15:56:06.066751Z'
 creator: sentry
 source: tests/sentry/grouping/test_variants.py
 ---
-app-depth-max:
-  hash: null
+app-depth-1:
+  hash: "be7f1b8b4014de623c533a8218dba5bd"
   component:
-    app-depth-max (stacktrace of system takes precedence)
-      stacktrace
-        frame (non app frame)
+    app-depth-1*
+      stacktrace*
+        frame*
+          module*
+            "foo.bar.Baz"
+          function (ignored lambda function)
+            "lambda$work$1"
+--------------------------------------------------------------------------
+app-depth-max:
+  hash: "be7f1b8b4014de623c533a8218dba5bd"
+  component:
+    app-depth-max*
+      stacktrace*
+        frame*
           module*
             "foo.bar.Baz"
           function (ignored lambda function)
