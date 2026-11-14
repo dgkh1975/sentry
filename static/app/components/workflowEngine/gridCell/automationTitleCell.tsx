@@ -1,0 +1,27 @@
+import type {Automation} from 'sentry/types/workflowEngine/automations';
+import {useOrganization} from 'sentry/utils/useOrganization';
+import {getAutomationActionsWarning} from 'sentry/views/automations/hooks/utils';
+import {makeAutomationDetailsPathname} from 'sentry/views/automations/pathnames';
+
+import {TitleCell} from './titleCell';
+
+interface Props {
+  automation: Automation;
+  openInNewTab?: boolean;
+}
+
+export function AutomationTitleCell({automation, openInNewTab}: Props) {
+  const organization = useOrganization();
+
+  const warning = getAutomationActionsWarning(automation);
+
+  return (
+    <TitleCell
+      name={automation.name}
+      link={makeAutomationDetailsPathname(organization.slug, automation.id)}
+      disabled={!automation.enabled}
+      warning={warning}
+      openInNewTab={openInNewTab}
+    />
+  );
+}

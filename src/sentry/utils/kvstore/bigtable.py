@@ -1,19 +1,23 @@
 import enum
 import logging
 import struct
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import timedelta
 from threading import Lock
-from typing import Any, Iterator, Mapping, Optional, Sequence, Tuple, cast
+from typing import Any
 
 from django.utils import timezone
 from google.api_core import exceptions, retry
 from google.cloud import bigtable
-from google.cloud.bigtable.row_data import PartialRowData
+from google.cloud.bigtable.row import PartialRowData
+from google.cloud.bigtable.row_data import DEFAULT_RETRY_READ_ROWS
 from google.cloud.bigtable.row_set import RowSet
 from google.cloud.bigtable.table import Table
+from sentry_sdk import traces
+
+from sentry.utils import metrics
 from sentry.utils.codecs import Codec, ZlibCodec, ZstdCodec
 from sentry.utils.kvstore.abstract import KVStorage
-
 
 logger = logging.getLogger(__name__)
 
@@ -52,19 +56,20 @@ class BigtableKVStorage(KVStorage[str, bytes]):
         COMPRESSED_ZLIB = 1 << 0
         COMPRESSED_ZSTD = 1 << 1
 
-    compression_strategies: Mapping[str, Tuple[Flags, Codec[bytes, bytes]]] = {
+    compression_strategies: Mapping[str, tuple[Flags, Codec[bytes, bytes]]] = {
         "zlib": (Flags.COMPRESSED_ZLIB, ZlibCodec()),
         "zstd": (Flags.COMPRESSED_ZSTD, ZstdCodec()),
     }
 
     def __init__(
         self,
-        project: Optional[str] = None,
-        instance: str = "sentry",
-        table_name: str = "nodestore",
-        client_options: Optional[Mapping[Any, Any]] = None,
-        default_ttl: Optional[timedelta] = None,
-        compression: Optional[str] = None,
+        instance: str,
+        table_name: str,
+        project: str | None = None,
+        client_options: Mapping[Any, Any] | None = None,
+        default_ttl: timedelta | None = None,
+        compression: str | None = None,
+        app_profile: str | None = None,
     ) -> None:
         client_options = client_options if client_options is not None else {}
         if "admin" in client_options:
@@ -79,6 +84,7 @@ class BigtableKVStorage(KVStorage[str, bytes]):
         self.client_options = client_options
         self.default_ttl = default_ttl
         self.compression = compression
+        self.app_profile = app_profile
 
         self.__table: Table
         self.__table_lock = Lock()
@@ -88,7 +94,7 @@ class BigtableKVStorage(KVStorage[str, bytes]):
             return (
                 bigtable.Client(project=self.project, admin=True, **self.client_options)
                 .instance(self.instance)
-                .table(self.table_name)
+                .table(self.table_name, app_profile_id=self.app_profile)
             )
 
         try:
@@ -106,18 +112,27 @@ class BigtableKVStorage(KVStorage[str, bytes]):
                     table = self.__table = (
                         bigtable.Client(project=self.project, **self.client_options)
                         .instance(self.instance)
-                        .table(self.table_name)
+                        .table(self.table_name, app_profile_id=self.app_profile)
                     )
             return table
 
-    def get(self, key: str) -> Optional[bytes]:
-        row = self._get_table().read_row(key)
+    def get(self, key: str) -> bytes | None:
+        with traces.start_span(name="bigtable.get", attributes={"sentry.op": "bigtable.get"}):
+            # Default timeout is 60 seconds, much too long for our ingestion pipeline
+            # Modify retry based on https://cloud.google.com/python/docs/reference/storage/latest/retry_timeout#configuring-retries
+            modified_retry = DEFAULT_RETRY_READ_ROWS.with_timeout(5.0)
+            row = self._get_table().read_row(key, retry=modified_retry)
         if row is None:
             return None
 
         return self.__decode_row(row)
 
-    def get_many(self, keys: Sequence[str]) -> Iterator[Tuple[str, bytes]]:
+    def get_many(self, keys: Sequence[str]) -> Iterator[tuple[str, bytes]]:
+        if not keys:
+            # This is probably unintentional, and the behavior isn't specified.
+            logging.warning("get_many called with empty keys sequence")
+            return
+
         rows = RowSet()
         for key in keys:
             rows.add_row_key(key)
@@ -126,12 +141,12 @@ class BigtableKVStorage(KVStorage[str, bytes]):
             value = self.__decode_row(row)
 
             # Even though Bigtable in't going to return empty rows, an empty
-            # value may be returned by ``__decode_row`` if the the row has
+            # value may be returned by ``__decode_row`` if the row has
             # outlived its TTL, so we need to check its value here.
             if value is not None:
                 yield row.row_key.decode("utf-8"), value
 
-    def __decode_row(self, row: PartialRowData) -> Optional[bytes]:
+    def __decode_row(self, row: PartialRowData) -> bytes | None:
         columns = row.cells[self.column_family]
 
         try:
@@ -148,7 +163,7 @@ class BigtableKVStorage(KVStorage[str, bytes]):
             if cell.timestamp < timezone.now():
                 return None
 
-        value = cast(bytes, cell.value)
+        value = cell.value
 
         if self.flags_column in columns:
             flags = self.Flags(self.flags_struct.unpack(columns[self.flags_column][0].value)[0])
@@ -167,7 +182,19 @@ class BigtableKVStorage(KVStorage[str, bytes]):
 
         return value
 
-    def set(self, key: str, value: bytes, ttl: Optional[timedelta] = None) -> None:
+    def set(self, key: str, value: bytes, ttl: timedelta | None = None) -> None:
+        try:
+            return self._set(key, value, ttl)
+        except (exceptions.InternalServerError, exceptions.ServiceUnavailable):
+            # Delete cached client before retry
+            with self.__table_lock:
+                del self.__table
+            # Retry once on InternalServerError or ServiceUnavailable
+            # 500 Received RST_STREAM with error code 2
+            # SENTRY-S6D
+            return self._set(key, value, ttl)
+
+    def _set(self, key: str, value: bytes, ttl: timedelta | None = None) -> None:
         # XXX: There is a type mismatch here -- ``direct_row`` expects
         # ``bytes`` but we are providing it with ``str``.
         row = self._get_table().direct_row(key)
@@ -213,6 +240,13 @@ class BigtableKVStorage(KVStorage[str, bytes]):
             compression_flag, strategy = self.compression_strategies[self.compression]
             flags |= compression_flag
             value = strategy.encode(value)
+
+            metrics.distribution(
+                "storage.put.size",
+                len(value),
+                tags={"usecase": "nodestore", "compression": self.compression},
+                unit="byte",
+            )
 
         # Only need to write the column at all if any flags are enabled. And if
         # so, pack it into a single byte.

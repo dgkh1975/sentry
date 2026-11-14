@@ -1,0 +1,36 @@
+import {useStore} from 'zustand';
+
+import {LoadingIndicator} from 'sentry/components/loadingIndicator';
+import {OrganizationsStore} from 'sentry/stores/organizationsStore';
+import {useParams} from 'sentry/utils/useParams';
+
+import {NotificationSettingsByType} from './notifications/notificationSettingsByType';
+import {getNotificationTypeFromPathname} from './notifications/utils';
+import {AccountNotificationFineTuning} from './accountNotificationFineTuning';
+
+const accountNotifications = [
+  'alerts',
+  'deploy',
+  'workflow',
+  'approval',
+  'quota',
+  'spikeProtection',
+  'reports',
+  'brokenMonitors',
+];
+
+export default function AccountNotificationFineTuningController() {
+  const loaded = useStore(OrganizationsStore, state => state.loaded);
+  const {fineTuneType: pathnameType} = useParams<{fineTuneType: string}>();
+  const fineTuneType = getNotificationTypeFromPathname(pathnameType);
+
+  if (!loaded) {
+    return <LoadingIndicator />;
+  }
+
+  if (accountNotifications.includes(fineTuneType)) {
+    return <NotificationSettingsByType notificationType={fineTuneType} />;
+  }
+
+  return <AccountNotificationFineTuning />;
+}

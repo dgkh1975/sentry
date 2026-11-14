@@ -1,0 +1,272 @@
+import {useMemo} from 'react';
+import * as Sentry from '@sentry/react';
+
+import {toast} from '@sentry/scraps/toast';
+
+import {openSaveQueryModal} from 'sentry/actionCreators/modal';
+import {usePageFilters} from 'sentry/components/pageFilters/usePageFilters';
+import {t} from 'sentry/locale';
+import type {NewQuery} from 'sentry/types/organization';
+import {trackAnalytics} from 'sentry/utils/analytics';
+import {defined} from 'sentry/utils/defined';
+import {EventView} from 'sentry/utils/discover/eventView';
+import type {Sort} from 'sentry/utils/discover/fields';
+import {parseFunction, prettifyParsedFunction} from 'sentry/utils/discover/fields';
+import {DiscoverDatasets} from 'sentry/utils/discover/types';
+import {MutableSearch} from 'sentry/utils/tokenizeSearch';
+import {useLocation} from 'sentry/utils/useLocation';
+import {useOrganization} from 'sentry/utils/useOrganization';
+import {useProjects} from 'sentry/utils/useProjects';
+import {Dataset, EventTypes} from 'sentry/views/alerts/rules/metric/types';
+import {
+  DashboardWidgetSource,
+  DEFAULT_WIDGET_NAME,
+  WidgetType,
+} from 'sentry/views/dashboards/types';
+import {handleAddQueryToDashboard} from 'sentry/views/discover/utils';
+import {useAlwaysMatchesCaseDetails} from 'sentry/views/explore/caseInsensitivityDefault';
+import {Mode} from 'sentry/views/explore/contexts/pageParamsContext/mode';
+import {formatSort} from 'sentry/views/explore/contexts/pageParamsContext/sortBys';
+import {CHART_TYPE_TO_DISPLAY_TYPE} from 'sentry/views/explore/hooks/useAddToDashboard';
+import {useGetSavedQuery} from 'sentry/views/explore/hooks/useGetSavedQueries';
+import {useLogsSaveQuery} from 'sentry/views/explore/hooks/useSaveQuery';
+import {
+  useQueryParamsHasTransformations,
+  useQueryParamsId,
+} from 'sentry/views/explore/queryParams/context';
+import type {Visualize} from 'sentry/views/explore/queryParams/visualize';
+import {TraceItemDataset} from 'sentry/views/explore/types';
+import {getSaveAsAlertMenuItem} from 'sentry/views/explore/utils/saveAsAlertMenuItem';
+import {visualizesToWidgetTransformations} from 'sentry/views/explore/utils/visualizesToWidgetTransformations';
+import {getAlertsUrl} from 'sentry/views/insights/common/utils/getAlertsUrl';
+
+import {isLogsEnabled} from './isLogsEnabled';
+
+interface UseSaveAsItemsOptions {
+  groupBys: readonly string[];
+  interval: string;
+  mode: Mode;
+  search: MutableSearch;
+  sortBys: readonly Sort[];
+  visualizes: readonly Visualize[];
+}
+
+export function useSaveAsItems({
+  groupBys,
+  interval,
+  mode,
+  search,
+  sortBys,
+  visualizes,
+}: UseSaveAsItemsOptions) {
+  const location = useLocation();
+  const organization = useOrganization();
+  const {projects} = useProjects();
+  const pageFilters = usePageFilters();
+  const {saveQuery, updateQuery} = useLogsSaveQuery();
+  const id = useQueryParamsId();
+  const hasTransformations = useQueryParamsHasTransformations();
+  const {data: savedQuery} = useGetSavedQuery(id);
+
+  const project =
+    projects.length === 1
+      ? projects[0]
+      : projects.find(p => p.id === `${pageFilters.selection.projects[0]}`);
+
+  const aggregates = useMemo(
+    () => visualizes.map(visualize => visualize.yAxis),
+    [visualizes]
+  );
+  const {alert: alertCaseDetails, dashboard: dashboardCaseDetails} =
+    useAlwaysMatchesCaseDetails({
+      query: search.formatString(),
+      yAxes: aggregates,
+      groupBys,
+      mode,
+    });
+
+  const saveAsQuery = useMemo(() => {
+    const items = [];
+
+    if (defined(id) && savedQuery?.isPrebuilt === false) {
+      items.push({
+        key: 'update-query',
+        textValue: t('Existing Query'),
+        label: <span>{t('Existing Query')}</span>,
+        onAction: async () => {
+          try {
+            toast.loading(t('Updating query...'));
+            await updateQuery();
+            toast.success(t('Query updated successfully'));
+            trackAnalytics('logs.save_as', {
+              save_type: 'update_query',
+              ui_source: 'searchbar',
+              organization,
+            });
+          } catch (error) {
+            toast.error(t('Failed to update query'));
+            Sentry.captureException(error);
+          }
+        },
+      });
+    }
+
+    items.push({
+      key: 'save-query',
+      label: <span>{t('New Query')}</span>,
+      textValue: t('New Query'),
+      onAction: () => {
+        trackAnalytics('logs.save_query_modal', {
+          action: 'open',
+          save_type: 'save_new_query',
+          ui_source: 'table',
+          organization,
+        });
+        openSaveQueryModal({
+          organization,
+          saveQuery,
+          source: 'table',
+          traceItemDataset: TraceItemDataset.LOGS,
+        });
+      },
+    });
+
+    return items;
+  }, [id, savedQuery?.isPrebuilt, updateQuery, saveQuery, organization]);
+
+  const saveAsAlert = useMemo(() => {
+    const alertsUrls = aggregates.map((yAxis: string, index: number) => {
+      const func = parseFunction(yAxis);
+      const label = func ? prettifyParsedFunction(func) : yAxis;
+      return {
+        key: `${yAxis}-${index}`,
+        label,
+        to: getAlertsUrl({
+          project,
+          query: search.formatString(),
+          pageFilters: pageFilters.selection,
+          aggregate: yAxis,
+          organization,
+          dataset: Dataset.EVENTS_ANALYTICS_PLATFORM,
+          interval,
+          eventTypes: [EventTypes.TRACE_ITEM_LOG],
+        }),
+        onAction: () => {
+          trackAnalytics('logs.save_as', {
+            save_type: 'alert',
+            ui_source: 'searchbar',
+            organization,
+          });
+        },
+      };
+    });
+
+    return {
+      ...getSaveAsAlertMenuItem({
+        alertsUrls,
+        submenu: true,
+        disabled: hasTransformations,
+      }),
+      details: alertCaseDetails,
+    };
+  }, [
+    aggregates,
+    alertCaseDetails,
+    interval,
+    organization,
+    pageFilters,
+    project,
+    search,
+    hasTransformations,
+  ]);
+
+  const saveAsDashboard = useMemo(() => {
+    const dashboardsUrls = aggregates.map((yAxis: string, index: number) => {
+      const visualize = visualizes[index];
+      const func = parseFunction(yAxis);
+      const label = func ? prettifyParsedFunction(func) : yAxis;
+
+      return {
+        key: String(index),
+        label,
+        onAction: () => {
+          trackAnalytics('logs.save_as', {
+            save_type: 'dashboard',
+            ui_source: 'searchbar',
+            organization,
+          });
+
+          const fields =
+            mode === Mode.SAMPLES
+              ? []
+              : [
+                  ...new Set([
+                    ...groupBys.filter(Boolean),
+                    yAxis,
+                    ...sortBys.map(sort => sort.field),
+                  ]),
+                ].filter(defined);
+
+          const discoverQuery: NewQuery = {
+            name: DEFAULT_WIDGET_NAME,
+            fields,
+            orderby: sortBys.map(formatSort),
+            query: search.formatString(),
+            version: 2,
+            dataset: DiscoverDatasets.OURLOGS,
+            yAxis: [yAxis],
+          };
+
+          const eventView = EventView.fromNewQueryWithPageFilters(
+            discoverQuery,
+            pageFilters.selection
+          );
+          if (visualize) {
+            eventView.display = CHART_TYPE_TO_DISPLAY_TYPE[visualize.chartType];
+          }
+
+          handleAddQueryToDashboard({
+            organization,
+            location,
+            eventView,
+            yAxis: eventView.yAxis,
+            widgetType: WidgetType.LOGS,
+            source: DashboardWidgetSource.LOGS,
+            transformations: visualize
+              ? visualizesToWidgetTransformations([visualize])
+              : undefined,
+          });
+        },
+      };
+    });
+
+    return {
+      key: 'add-to-dashboard',
+      label: t('Dashboard widget'),
+      textValue: t('Dashboard widget'),
+      details: dashboardCaseDetails,
+      children: dashboardsUrls,
+      disabled: !dashboardsUrls || dashboardsUrls.length === 0,
+      submenu: true,
+    };
+  }, [
+    aggregates,
+    dashboardCaseDetails,
+    groupBys,
+    mode,
+    organization,
+    pageFilters,
+    search,
+    sortBys,
+    location,
+    visualizes,
+  ]);
+
+  return useMemo(() => {
+    const saveAs = [];
+    if (isLogsEnabled(organization)) {
+      saveAs.push(...saveAsQuery, saveAsAlert, saveAsDashboard);
+    }
+    return saveAs;
+  }, [organization, saveAsQuery, saveAsAlert, saveAsDashboard]);
+}

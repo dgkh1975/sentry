@@ -1,0 +1,270 @@
+from collections.abc import Mapping, MutableMapping, Sequence
+from datetime import datetime, timedelta
+from typing import Annotated, Any, NotRequired, TypedDict, cast
+
+from django.contrib.auth.models import AnonymousUser
+from django.utils import timezone
+
+from sentry.api.serializers import Serializer, register, serialize
+from sentry.apidocs.descriptions import ApiDescription
+from sentry.apidocs.formats import Uuid, uuid_str
+from sentry.app import env
+from sentry.auth.principal import acting_user_id
+from sentry.auth.staff import is_active_staff
+from sentry.auth.superuser import is_active_superuser
+from sentry.constants import SentryAppStatus, SentryAppStatusName
+from sentry.hybridcloud.services.organization_mapping import organization_mapping_service
+from sentry.integrations.models.integration_feature import IntegrationFeature, IntegrationTypes
+from sentry.models.apiapplication import ApiApplication
+from sentry.organizations.services.organization import organization_service
+from sentry.organizations.services.organization.model import RpcUserOrganizationContext
+from sentry.sentry_apps.api.serializers.sentry_app_avatar import (
+    SentryAppAvatarSerializer as ResponseSentryAppAvatarSerializer,
+)
+from sentry.sentry_apps.api.serializers.sentry_app_avatar import SentryAppAvatarSerializerResponse
+from sentry.sentry_apps.models.sentry_app import MASKED_VALUE, SentryApp
+from sentry.sentry_apps.models.sentry_app_avatar import SentryAppAvatar
+from sentry.users.models.user import User
+from sentry.users.services.user.model import RpcUser
+from sentry.users.services.user.service import user_service
+
+
+def mask_webhook_header_values(headers: Sequence[str | None]) -> list[str]:
+    """Replace each header's value with MASKED_VALUE, preserving the header name.
+
+    Webhook header values may carry secrets (e.g. bearer tokens), so they are masked
+    for viewers without elevated access. The name is kept visible so the form can
+    still render which headers are set.
+    """
+    masked = []
+    for header in headers:
+        if header is None:
+            continue
+        name, separator, _value = header.partition(":")
+        masked.append(f"{name}: {MASKED_VALUE}" if separator else MASKED_VALUE)
+    return masked
+
+
+class OwnerResponseField(TypedDict):
+    id: Annotated[int, ApiDescription("ID of the organization that owns the integration")]
+    slug: Annotated[str, ApiDescription("Slug of the organization that owns the integration")]
+
+
+class SentryAppSerializerResponse(TypedDict):
+    allowedOrigins: Annotated[list[str], ApiDescription("Allowed origins for CORS")]
+    avatars: Annotated[
+        list[SentryAppAvatarSerializerResponse], ApiDescription("Avatars of the custom integration")
+    ]
+    # Webhook subscriptions were originally to whole resources ("issue") but can
+    # now also be to individual events ("issue.resolved"). `events` keeps the
+    # original resource-level view by consolidating the stored events;
+    # `webhookEvents` is the exact stored list.
+    events: Annotated[
+        set[str],
+        ApiDescription("Resources the integration's webhooks are subscribed to, such as issue"),
+    ]
+    webhookEvents: Annotated[
+        list[str],
+        ApiDescription("Webhook events the integration is subscribed to, such as issue.resolved"),
+    ]
+    featureData: Annotated[
+        list[str],
+        ApiDescription("Features the integration supports. Empty for internal integrations"),
+    ]
+    isAlertable: Annotated[
+        bool, ApiDescription("Whether the integration can be used in alert rules")
+    ]
+    metadata: Annotated[str, ApiDescription("Metadata of the integration")]
+    name: Annotated[str, ApiDescription("Name of the custom integration")]
+    schema: Annotated[
+        str, ApiDescription("UI components schema used to render the integration's UI elements")
+    ]
+    scopes: Annotated[list[str], ApiDescription("Permission scopes for API access")]
+    slug: Annotated[str, ApiDescription("Slug of the custom integration")]
+    status: Annotated[SentryAppStatusName, ApiDescription("Status of the integration")]
+    uuid: Annotated[Uuid, ApiDescription("UUID of the custom integration")]
+    verifyInstall: Annotated[
+        bool, ApiDescription("Whether installations of the integration must be verified")
+    ]
+    # Header values are masked unless the viewer is allowed to see secrets.
+    webhookHeaders: Annotated[
+        list[str],
+        ApiDescription(
+            "Custom headers sent with every webhook request, as Header-Name: value pairs. Values are masked"
+        ),
+    ]
+
+    # Optional fields
+    isDisabled: NotRequired[Annotated[bool, ApiDescription("Whether the integration is disabled")]]
+    author: NotRequired[Annotated[str | None, ApiDescription("Author of the integration")]]
+    overview: NotRequired[Annotated[str | None, ApiDescription("Description of the integration")]]
+    popularity: NotRequired[
+        Annotated[int | None, ApiDescription("Popularity score of the integration")]
+    ]
+    redirectUrl: NotRequired[
+        Annotated[str | None, ApiDescription("URL to redirect to after installation")]
+    ]
+    webhookUrl: NotRequired[Annotated[str | None, ApiDescription("Webhook destination URL")]]
+    clientSecret: NotRequired[
+        Annotated[
+            str | None,
+            ApiDescription(
+                "OAuth client secret. Only shown to authorized users within 5 minutes of creation, and masked otherwise"
+            ),
+        ]
+    ]
+    datePublished: NotRequired[
+        Annotated[
+            datetime,
+            ApiDescription(
+                "When the integration was published (ISO 8601). Only set for published integrations"
+            ),
+        ]
+    ]
+    clientId: NotRequired[
+        Annotated[
+            str,
+            ApiDescription("OAuth client ID. Only included for members of the owner organization"),
+        ]
+    ]
+    owner: NotRequired[
+        Annotated[
+            OwnerResponseField,
+            ApiDescription(
+                "Organization that owns the integration. Only included for members of the owner organization"
+            ),
+        ]
+    ]
+
+
+@register(SentryApp)
+class SentryAppSerializer(Serializer):
+    def get_attrs(
+        self, item_list: Sequence[SentryApp], user: User | RpcUser | AnonymousUser, **kwargs: Any
+    ) -> MutableMapping[Any, Any]:
+        # Get associated IntegrationFeatures
+        app_feature_attrs = IntegrationFeature.objects.get_by_targets_as_dict(
+            targets=item_list, target_type=IntegrationTypes.SENTRY_APP
+        )
+
+        # Get associated SentryAppAvatars
+        app_avatar_attrs = SentryAppAvatar.objects.get_by_apps_as_dict(sentry_apps=item_list)
+        organizations = {
+            o.id: o
+            for o in organization_mapping_service.get_many(
+                organization_ids=[i.owner_id for i in item_list if i.owner_id is not None]
+            )
+        }
+        applications: Mapping[int, ApiApplication] = {
+            app.id: app
+            for app in ApiApplication.objects.filter(id__in=[i.application_id for i in item_list])
+        }
+
+        user_id = acting_user_id(user)
+        user_orgs = user_service.get_organizations(user_id=user_id) if user_id is not None else []
+        user_org_ids = {uo.id for uo in user_orgs}
+
+        # Fetch organization contexts for unique owner_ids where user is a member.
+        # This deduplicates the calls - typically all items share the same owner_id
+        # (e.g., OrganizationSentryAppsEndpoint filters by single org), so this
+        # reduces N calls to 1.
+        owner_contexts: dict[int, RpcUserOrganizationContext] = {}
+        unique_owner_ids = {i.owner_id for i in item_list if i.owner_id in user_org_ids}
+        for owner_id in unique_owner_ids:
+            owner_context = organization_service.get_access_context(
+                organization_id=owner_id, user_id=user_id
+            )
+            if owner_context:
+                owner_contexts[owner_id] = owner_context
+
+        return {
+            item: {
+                "features": app_feature_attrs.get(item.id, set()),
+                "avatars": app_avatar_attrs.get(item.id, []),
+                "owner": organizations.get(item.owner_id, None),
+                "application": applications.get(item.application_id, None),
+                "user_org_ids": user_org_ids,
+                "owner_context": owner_contexts.get(item.owner_id, None),
+            }
+            for item in item_list
+        }
+
+    def serialize(
+        self,
+        obj: SentryApp,
+        attrs: Mapping[str, Any],
+        user: User | RpcUser | AnonymousUser,
+        **kwargs: Any,
+    ) -> SentryAppSerializerResponse:
+        from sentry.sentry_apps.logic import consolidate_events
+
+        application = attrs["application"]
+
+        data = SentryAppSerializerResponse(
+            allowedOrigins=application.get_allowed_origins(),
+            author=obj.author,
+            avatars=serialize(
+                objects=attrs["avatars"],
+                user=user,
+                serializer=ResponseSentryAppAvatarSerializer(),
+            ),
+            events=consolidate_events(obj.events),
+            webhookEvents=sorted(obj.events),
+            featureData=[],
+            isAlertable=obj.is_alertable,
+            isDisabled=obj.is_disabled,
+            metadata=obj.metadata,
+            name=obj.name,
+            overview=obj.overview,
+            popularity=obj.popularity,
+            redirectUrl=obj.redirect_url,
+            schema=obj.schema,
+            scopes=obj.get_scopes(),
+            slug=obj.slug,
+            status=cast(SentryAppStatusName, obj.get_status_display()),
+            uuid=uuid_str(obj.uuid),
+            verifyInstall=obj.verify_install,
+            webhookUrl=obj.webhook_url,
+            # Header values are write-only after save; masked values can still be
+            # resubmitted unchanged because the updater preserves stored values.
+            webhookHeaders=mask_webhook_header_values(obj.webhook_headers),
+        )
+
+        if obj.status != SentryAppStatus.INTERNAL:
+            data["featureData"] = [serialize(x, user) for x in attrs.get("features", [])]
+
+        if obj.status == SentryAppStatus.PUBLISHED and obj.date_published:
+            data.update({"datePublished": obj.date_published})
+
+        owner = attrs["owner"]
+        user_org_ids = attrs["user_org_ids"]
+        owner_context = attrs["owner_context"]
+
+        if owner:
+            # TODO(schew2381): Check if superuser needs this for Sentry Apps in the UI.
+            elevated_user = env.request and (
+                is_active_superuser(env.request) or is_active_staff(env.request)
+            )
+            if elevated_user or owner.id in user_org_ids:
+                is_secret_visible = obj.date_added > timezone.now() - timedelta(minutes=5)
+
+                assert application, "Sentry App must have an associated ApiApplication"
+
+                client_secret = MASKED_VALUE
+                if elevated_user or (
+                    owner_context
+                    and owner_context.member
+                    and "org:write" in owner_context.member.scopes
+                    and obj.show_auth_info(owner_context.member)
+                ):
+                    client_secret = application.client_secret
+
+                data.update(
+                    {
+                        "clientId": application.client_id,
+                        "clientSecret": client_secret if is_secret_visible else None,
+                        "owner": {"id": owner.id, "slug": owner.slug},
+                    }
+                )
+
+        return data

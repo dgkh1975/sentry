@@ -1,0 +1,125 @@
+import {Fragment} from 'react';
+import {useQuery} from '@tanstack/react-query';
+import {parseAsString, useQueryState} from 'nuqs';
+
+import {Container} from '@sentry/scraps/layout';
+import {Pagination} from '@sentry/scraps/pagination';
+
+import {LoadingError} from 'sentry/components/loadingError';
+import {Panel} from 'sentry/components/panels/panel';
+import {PanelBody} from 'sentry/components/panels/panelBody';
+import {PanelHeader} from 'sentry/components/panels/panelHeader';
+import {Placeholder} from 'sentry/components/placeholder';
+import {t, tn} from 'sentry/locale';
+import type {Repository} from 'sentry/types/integrations';
+import {selectJsonWithHeaders} from 'sentry/utils/api/apiOptions';
+import {getPaginationProps} from 'sentry/utils/pagination';
+import {useOrganization} from 'sentry/utils/useOrganization';
+import {EmptyState} from 'sentry/views/explore/releases/detail/commitsAndFiles/emptyState';
+import {FileChange} from 'sentry/views/explore/releases/detail/commitsAndFiles/fileChange';
+import {RepositorySwitcher} from 'sentry/views/explore/releases/detail/commitsAndFiles/repositorySwitcher';
+import {
+  getFilesByRepository,
+  getReposToRender,
+} from 'sentry/views/explore/releases/detail/utils';
+import {releaseCommitFilesApiOptions} from 'sentry/views/explore/releases/utils/releaseCommitFilesApiOptions';
+
+import {ReleasesDrawerFields} from './utils';
+
+interface FilesChangedProps {
+  release: string;
+  releaseRepos: Repository[];
+}
+
+export function FilesChangedList({releaseRepos, release}: FilesChangedProps) {
+  const organization = useOrganization();
+  const [rdActiveRepo] = useQueryState(
+    ReleasesDrawerFields.ACTIVE_REPO,
+    parseAsString.withDefault('')
+  );
+  const [rdFilesCursor, setRdFilesCursor] = useQueryState(
+    ReleasesDrawerFields.FILES_CURSOR,
+    parseAsString.withDefault('')
+  );
+  const activeReleaseRepo =
+    releaseRepos.find(repo => repo.name === rdActiveRepo) ?? releaseRepos[0];
+
+  const {
+    data,
+    isPending: isLoadingFileList,
+    error: fileListError,
+    refetch,
+  } = useQuery({
+    ...releaseCommitFilesApiOptions({
+      organization,
+      release,
+      activeRepository: activeReleaseRepo,
+      cursor: rdFilesCursor,
+    }),
+    select: selectJsonWithHeaders,
+  });
+  const fileList = data?.json ?? [];
+
+  const filesByRepository = getFilesByRepository(fileList);
+  const reposToRender = getReposToRender(Object.keys(filesByRepository));
+  const fileListPageLinks = data?.headers.Link;
+
+  return (
+    <div>
+      {releaseRepos.length > 1 && (
+        <Container marginBottom="xl">
+          <RepositorySwitcher
+            repositories={releaseRepos}
+            activeRepository={activeReleaseRepo}
+          />
+        </Container>
+      )}
+      <div>
+        {fileListError && <LoadingError onRetry={refetch} />}
+        {isLoadingFileList ? (
+          <Placeholder height="120px" />
+        ) : fileList.length ? (
+          <Fragment>
+            {reposToRender.map(repoName => {
+              const repoData = filesByRepository[repoName]!;
+              const repoDataEntries = Object.entries(repoData);
+              const fileCount = repoDataEntries.length;
+              return (
+                <Panel key={repoName}>
+                  <PanelHeader>
+                    <span>{repoName}</span>
+                    <span>{tn('%s file changed', '%s files changed', fileCount)}</span>
+                  </PanelHeader>
+                  <PanelBody>
+                    {repoDataEntries.map(([filename, {authors}]) => {
+                      return (
+                        <FileChange
+                          key={filename}
+                          filename={filename}
+                          authors={authors ? Object.values(authors) : []}
+                        />
+                      );
+                    })}
+                  </PanelBody>
+                </Panel>
+              );
+            })}
+            <Pagination
+              {...getPaginationProps(fileListPageLinks)}
+              onCursor={cursor => setRdFilesCursor(cursor ?? '')}
+            />
+          </Fragment>
+        ) : (
+          <EmptyState>
+            {activeReleaseRepo
+              ? t(
+                  'There are no changed files associated with this release in the %s repository.',
+                  activeReleaseRepo.name
+                )
+              : t('There are no changed files associated with this release.')}
+          </EmptyState>
+        )}
+      </div>
+    </div>
+  );
+}

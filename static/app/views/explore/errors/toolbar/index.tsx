@@ -1,0 +1,30 @@
+import {Button} from '@sentry/scraps/button';
+import {Grid, Container} from '@sentry/scraps/layout';
+
+import {t} from 'sentry/locale';
+import {SaveStyledToolbarSection} from 'sentry/views/explore/toolbar/toolbarSaveAs';
+
+import {ErrorsToolbarGroupBy} from './errorsToolbarGroupBy';
+import {ErrorsToolbarSortBy} from './errorsToolbarSortBy';
+import {ErrorsToolbarVisualize} from './errorsToolbarVisualize';
+
+export function ErrorsToolbar() {
+  return (
+    <Container data-test-id="errors-toolbar">
+      <ErrorsToolbarVisualize />
+      <ErrorsToolbarGroupBy />
+      <ErrorsToolbarSortBy />
+      <ErrorsToolbarSaveAs />
+    </Container>
+  );
+}
+
+function ErrorsToolbarSaveAs() {
+  return (
+    <SaveStyledToolbarSection data-test-id="section-save-as">
+      <Grid flow="column" align="center" gap="md">
+        <Button>{t('Save as')}</Button>
+      </Grid>
+    </SaveStyledToolbarSection>
+  );
+}

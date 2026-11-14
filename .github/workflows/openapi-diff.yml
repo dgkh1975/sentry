@@ -1,42 +1,124 @@
 name: openapi-diff
 on:
   pull_request:
-    paths:
-      - 'api-docs/**'
+
+# Cancel in progress workflows on pull_requests.
+# https://docs.github.com/en/actions/using-jobs/using-concurrency#example-using-a-fallback-value
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+# hack for https://github.com/actions/cache/issues/810#issuecomment-1222550359
+env:
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 3
+  # Shared by the jobs below: the artifact the build job hands to the compare
+  # jobs, and where it puts the PR's RPC schema and the baseline schemas.
+  DIFF_ARTIFACT: openapi-diff
+  RPC_SCHEMA: .artifacts/rpc_method_schema.json
+  BASELINE_DIR: .artifacts/openapi-baseline
 
 jobs:
-    check-diff:
-      runs-on: ubuntu-18.04
-      steps:
-        - name: Checkout getsentry/sentry
-          uses: actions/checkout@v2
-          with:
-            path: sentry
+  # Builds this PR's public spec and RPC schema, and fetches the ones on master
+  # where the PR branched off, for the jobs below to compare.
+  build:
+    name: Build the API schemas to compare
+    runs-on: ubuntu-26.04-arm
+    timeout-minutes: 90
+    permissions:
+      # Artifacts of the openapi workflow on master hold the baselines.
+      actions: read
+      contents: read
+      pull-requests: read
+    outputs:
+      api_docs: ${{ steps.changes.outputs.api_docs }}
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
 
-        - name: Getsentry Token
-          id: getsentry
-          uses: getsentry/action-github-app-token@v1
-          with:
-            app_id: ${{ secrets.SENTRY_INTERNAL_APP_ID }}
-            private_key: ${{ secrets.SENTRY_INTERNAL_APP_PRIVATE_KEY }}
+      - name: Check for python file changes
+        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        id: changes
+        with:
+          token: ${{ github.token }}
+          filters: .github/file-filters.yml
 
-        - name: Checkout getsentry/sentry-api-schema
-          uses: actions/checkout@v2
-          with:
-            ref: 'main'
-            repository: getsentry/sentry-api-schema
-            path: sentry-api-schema
-            token: ${{ steps.getsentry.outputs.token }}
+      - name: Setup sentry env
+        uses: ./.github/actions/setup-sentry
+        with:
+          mode: migrations
+        if: steps.changes.outputs.api_docs == 'true'
 
-        - name: Install/setup node
-          uses: volta-cli/action@v1
+      - uses: ./.github/actions/setup-node-pnpm
+        if: steps.changes.outputs.api_docs == 'true'
 
-        - name: Build OpenAPI Derefed JSON
-          run: |
-            cd sentry
-            yarn install --frozen-lockfile
-            yarn run build-derefed-docs api-docs/openapi-derefed.json
+      - name: Build OpenAPI Derefed JSON
+        if: steps.changes.outputs.api_docs == 'true'
+        run: make build-api-docs
 
-        - name: Compare OpenAPI Derefed JSON
-          run: |
-            npx json-diff --color sentry/api-docs/openapi-derefed.json sentry-api-schema/openapi-derefed.json
+      - name: Build RPC method schema
+        if: steps.changes.outputs.api_docs == 'true'
+        run: make build-rpc-schema
+
+      - name: Fetch the merge-base's schemas
+        if: steps.changes.outputs.api_docs == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: .github/workflows/scripts/openapi-diff.sh baseline "$BASELINE_DIR"
+
+      - name: Upload the schemas to compare
+        if: steps.changes.outputs.api_docs == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ env.DIFF_ARTIFACT }}
+          path: |
+            tests/apidocs/openapi-derefed.json
+            ${{ env.RPC_SCHEMA }}
+            ${{ env.BASELINE_DIR }}/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
+  changelog:
+    name: Public API changelog
+    needs: build
+    if: needs.build.outputs.api_docs == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          sparse-checkout: .github/workflows/scripts
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ env.DIFF_ARTIFACT }}
+
+      # Writes the changelog to the job summary. It is information for the
+      # author and reviewers, so it never fails the build.
+      - name: Summarize public API changes
+        run: .github/workflows/scripts/openapi-diff.sh changelog "$BASELINE_DIR/openapi-derefed.json" tests/apidocs/openapi-derefed.json
+
+  rpc-breaking:
+    name: RPC schema breaking changes
+    needs: build
+    if: needs.build.outputs.api_docs == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+        with:
+          sparse-checkout: .github/workflows/scripts
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ env.DIFF_ARTIFACT }}
+
+      # Control and cell silos deploy separately, so an RPC change must keep
+      # working with callers built from the merge-base.
+      - name: Check RPC schema for breaking changes
+        run: .github/workflows/scripts/openapi-diff.sh rpc-breaking "$BASELINE_DIR/rpc_method_schema.json" "$RPC_SCHEMA"

@@ -1,0 +1,64 @@
+import {useCallback} from 'react';
+import {ThemeProvider} from '@emotion/react';
+import styled from '@emotion/styled';
+import {useQuery} from '@tanstack/react-query';
+
+import seerConfigMainBg from 'sentry-images/spot/seer-config-main-bg.svg';
+
+import {Container, Flex, Grid, Stack} from '@sentry/scraps/layout';
+import {Heading, Text} from '@sentry/scraps/text';
+import {useInvertedTheme} from '@sentry/scraps/theme';
+
+import {t} from 'sentry/locale';
+import {getSeerOnboardingCheckQueryOptions} from 'sentry/utils/getSeerOnboardingCheckQueryOptions';
+import {useOrganization} from 'sentry/utils/useOrganization';
+
+import {GithubButton} from 'getsentry/views/seerAutomation/onboarding/githubButton';
+
+export function SeerConnectGitHubBanner() {
+  const organization = useOrganization();
+  const theme = useInvertedTheme();
+
+  const {data, isFetched, isError} = useQuery(
+    getSeerOnboardingCheckQueryOptions({organization})
+  );
+
+  const handleAddIntegration = useCallback(() => {
+    window.location.reload();
+  }, []);
+
+  if (!isFetched || isError || data?.hasSupportedScmIntegration) {
+    return null;
+  }
+
+  return (
+    <Container border="primary" radius="lg" overflow="hidden">
+      <ThemeProvider theme={theme}>
+        <Container background="primary">
+          <Grid columns="5fr 2fr">
+            <ImageContainer />
+            <Stack gap="lg" padding="2xl">
+              <Heading as="h3">{t('Connect to GitHub')}</Heading>
+              <Text>
+                {t(
+                  'Connect your GitHub repositories so Seer can find root causes and propose fixes.'
+                )}
+              </Text>
+
+              <Flex paddingTop="lg">
+                <GithubButton onAddIntegration={handleAddIntegration} />
+              </Flex>
+            </Stack>
+          </Grid>
+        </Container>
+      </ThemeProvider>
+    </Container>
+  );
+}
+
+const ImageContainer = styled('div')`
+  background-image: url(${seerConfigMainBg});
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+`;

@@ -1,4 +1,4 @@
-{% spaceless %}
+{% load sentry_helpers %}{% spaceless %}
 {% autoescape off %}
 {% if enhanced_privacy %}
 Details about this issue are not shown in this notification since enhanced
@@ -14,18 +14,11 @@ Details
 
 {{ link }}
 
-{% if commits %}
-Suspect Commits
----------------
-{% for commit in commits %}
-* {{ commit.subject }}
-  {{ commit.shortId }} - {% if commit.author %}{{ commit.author.name }}{% else %}Unknown Author{% endif %}
-{% endfor %}{% endif %}
-
+{% include "sentry/emails/_suspect_commits.txt" %}
 Tags
 ----
 {% for tag_key, tag_value in tags %}
-* {{ tag_key }} = {{ tag_value }}{% endfor %}
+* {{ tag_key|sanitize_periods }} = {{ tag_value }}{% endfor %}
 
 {% if interfaces %}{% for label, _, text in interfaces %}
 {{ label }}

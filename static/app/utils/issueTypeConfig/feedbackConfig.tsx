@@ -1,0 +1,11 @@
+import {t} from 'sentry/locale';
+
+import type {IssueCategoryConfigMapping} from './types';
+
+export const feedbackConfig: IssueCategoryConfigMapping = {
+  _categoryDefaults: {
+    usesIssuePlatform: true,
+    evidence: {title: t('Feedback')},
+    issueSummary: {enabled: false},
+  },
+};

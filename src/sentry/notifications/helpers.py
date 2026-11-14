@@ -1,169 +1,134 @@
+from __future__ import annotations
+
+import logging
 from collections import defaultdict
-from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
+from collections.abc import Iterable, Mapping, MutableMapping
+from typing import TYPE_CHECKING, Annotated, Any, TypedDict, TypeGuard
 
-from sentry.notifications.legacy_mappings import get_legacy_value
-from sentry.notifications.types import (
-    NotificationScopeType,
-    NotificationSettingOptionValues,
-    NotificationSettingTypes,
+from sentry.apidocs.descriptions import ApiDescription
+from sentry.integrations.types import ExternalProviderEnum
+from sentry.notifications.defaults import (
+    DEFAULT_ENABLED_PROVIDERS_VALUES,
+    NOTIFICATION_SETTINGS_TYPE_DEFAULTS,
 )
+from sentry.notifications.types import (
+    SUBSCRIPTION_REASON_MAP,
+    VALID_VALUES_FOR_KEY,
+    GroupSubscriptionReason,
+    NotificationSettingEnum,
+    NotificationSettingsOptionEnum,
+)
+from sentry.types.actor import Actor
+from sentry.users.services.user.model import RpcUser
+
+if TYPE_CHECKING:
+    from sentry.models.group import Group
+    from sentry.models.team import Team
+    from sentry.users.models.user import User
+
+logger = logging.getLogger(__name__)
 
 
-def _get_setting_value_from_mapping(
-    notification_settings_by_user: Mapping[
-        Any, Mapping[NotificationScopeType, NotificationSettingOptionValues]
-    ],
-    user: Any,
-    type: NotificationSettingTypes,
-    default: NotificationSettingOptionValues,
-) -> NotificationSettingOptionValues:
-    specific_scope = get_scope_type(type)
-    notification_settings_option = notification_settings_by_user.get(user)
-    if notification_settings_option:
-        notification_setting_option = notification_settings_option.get(
-            specific_scope
-        ) or notification_settings_option.get(NotificationScopeType.USER)
-        if notification_setting_option:
-            return notification_setting_option
-    return default
+def get_default_for_provider(
+    type: NotificationSettingEnum,
+    provider: ExternalProviderEnum,
+) -> NotificationSettingsOptionEnum:
+    # check if the provider is enable in our defaults and that the type exists as an enum
+    if (
+        provider.value not in DEFAULT_ENABLED_PROVIDERS_VALUES
+        or type not in NotificationSettingEnum
+    ):
+        return NotificationSettingsOptionEnum.NEVER
+
+    # TODO(Steve): Make sure that all keys are present in NOTIFICATION_SETTINGS_TYPE_DEFAULTS
+    if type not in NOTIFICATION_SETTINGS_TYPE_DEFAULTS:
+        return NotificationSettingsOptionEnum.NEVER
+
+    # special case to disable reports for non-email providers
+    if (
+        type == NotificationSettingEnum.REPORTS
+        and provider.value != ExternalProviderEnum.EMAIL.value
+    ):
+        # Reports are only sent to email
+        return NotificationSettingsOptionEnum.NEVER
+
+    return NOTIFICATION_SETTINGS_TYPE_DEFAULTS[type]
 
 
-def should_user_be_notified(
-    notification_settings_by_user: Mapping[
-        Any, Mapping[NotificationScopeType, NotificationSettingOptionValues]
-    ],
-    user: Any,
-) -> bool:
+def get_type_defaults() -> Mapping[NotificationSettingEnum, NotificationSettingsOptionEnum]:
+    # this tells us what the default value is for each notification type
+    type_defaults = {}
+    for notification_type, default in NOTIFICATION_SETTINGS_TYPE_DEFAULTS.items():
+        # for the given notification type, figure out what the default value is
+        type_defaults[notification_type] = default
+    return type_defaults
+
+
+def validate(type: NotificationSettingEnum, value: NotificationSettingsOptionEnum) -> bool:
+    """:returns boolean. True if the "value" is valid for the "type"."""
+    return value in VALID_VALUES_FOR_KEY.get(type, {})
+
+
+class SubscriptionDetails(TypedDict, total=False):
+    disabled: Annotated[
+        bool, ApiDescription("Whether the requesting user turned off notifications for the issue")
+    ]
+    reason: Annotated[
+        str,
+        ApiDescription(
+            "Why the requesting user is subscribed: commented, assigned, bookmarked, changed_status, mentioned or unknown"
+        ),
+    ]
+
+
+def get_subscription_from_attributes(
+    attrs: Mapping[str, Any],
+) -> tuple[bool, SubscriptionDetails | None]:
+    subscription_details: SubscriptionDetails | None = None
+    is_disabled, is_subscribed, subscription = attrs["subscription"]
+    if is_disabled:
+        subscription_details = {"disabled": True}
+    elif subscription and subscription.is_active:
+        subscription_details = {
+            "reason": SUBSCRIPTION_REASON_MAP.get(subscription.reason, "unknown")
+        }
+
+    return is_subscribed, subscription_details
+
+
+def collect_groups_by_project(groups: Iterable[Group]) -> Mapping[int, set[Group]]:
     """
-    Given a mapping of default and specific notification settings by user,
-    determine if a user should receive an ISSUE_ALERT notification.
+    Collect all of the projects to look up, and keep a set of groups that are
+    part of that project. (Note that the common -- but not only -- case here is
+    that all groups are part of the same project.)
     """
-    return (
-        _get_setting_value_from_mapping(
-            notification_settings_by_user,
-            user,
-            NotificationSettingTypes.ISSUE_ALERTS,
-            NotificationSettingOptionValues.ALWAYS,
-        )
-        == NotificationSettingOptionValues.ALWAYS
-    )
+    projects = defaultdict(set)
+    for group in groups:
+        projects[group.project_id].add(group)
+    return projects
 
 
-def should_be_participating(
-    user: Any,
-    subscriptions_by_user_id: Mapping[int, Any],
-    notification_settings_by_user: Mapping[
-        Any, Mapping[NotificationScopeType, NotificationSettingOptionValues]
-    ],
-) -> bool:
-    """
-    Given a mapping of users to subscriptions and a mapping of default and
-    specific notification settings by user, determine if a user should receive
-    a WORKFLOW notification.
-    """
-    value = _get_setting_value_from_mapping(
-        notification_settings_by_user,
-        user,
-        NotificationSettingTypes.WORKFLOW,
-        NotificationSettingOptionValues.SUBSCRIBE_ONLY,
-    )
+def get_reason_context(extra_context: Mapping[str, Any]) -> MutableMapping[str, str]:
+    """Get user-specific context. Do not call get_context() here."""
+    reason = extra_context.get("reason", 0)
+    return {
+        "reason": GroupSubscriptionReason.descriptions.get(reason, "are subscribed to this issue")
+    }
 
-    if value == NotificationSettingOptionValues.NEVER:
-        return False
 
-    if value == NotificationSettingOptionValues.ALWAYS:
+def recipient_is_user(
+    recipient: Actor | Team | RpcUser | User,
+) -> TypeGuard[Actor | RpcUser | User]:
+    from sentry.users.models.user import User
+
+    if isinstance(recipient, Actor) and recipient.is_user:
         return True
-
-    subscription = subscriptions_by_user_id.get(user.id)
-    return bool(subscription and subscription.is_active)
+    return isinstance(recipient, (RpcUser, User))
 
 
-def transform_to_notification_settings_by_user(
-    notification_settings: Iterable[Any],
-    users: Iterable[Any],
-) -> Mapping[Any, Mapping[NotificationScopeType, NotificationSettingOptionValues]]:
-    """
-    Given a unorganized list of notification settings, create a mapping of
-    users to a map of notification scopes to setting values.
-    """
-    actor_mapping = {user.actor_id: user for user in users}
-    notification_settings_by_user: Dict[
-        Any, Dict[NotificationScopeType, NotificationSettingOptionValues]
-    ] = defaultdict(dict)
-    for notification_setting in notification_settings:
-        user = actor_mapping.get(notification_setting.target_id)
-        notification_settings_by_user[user][
-            NotificationScopeType(notification_setting.scope_type)
-        ] = NotificationSettingOptionValues(notification_setting.value)
-    return notification_settings_by_user
+def recipient_is_team(recipient: Actor | Team | RpcUser | User) -> TypeGuard[Actor | Team]:
+    from sentry.models.team import Team
 
-
-def transform_to_notification_settings_by_parent_id(
-    notification_settings: Iterable[Any],
-) -> Tuple[
-    Mapping[int, NotificationSettingOptionValues], Optional[NotificationSettingOptionValues]
-]:
-    """
-    Given a unorganized list of notification settings, create a mapping of
-    parents (projects or organizations) to setting values. Return this mapping
-    as a tuple with the user's parent-independent notification preference.
-    """
-    notification_settings_by_parent_id = {}
-    notification_setting_user_default = None
-    for notification_setting in notification_settings:
-        if notification_setting.scope_type == NotificationScopeType.USER.value:
-            notification_setting_user_default = NotificationSettingOptionValues(
-                notification_setting.value
-            )
-        else:
-            key = int(notification_setting.scope_identifier)
-            notification_settings_by_parent_id[key] = NotificationSettingOptionValues(
-                notification_setting.value
-            )
-    return notification_settings_by_parent_id, notification_setting_user_default
-
-
-def validate(type: NotificationSettingTypes, value: NotificationSettingOptionValues) -> bool:
-    """ :returns boolean. True if the "value" is valid for the "type". """
-    return get_legacy_value(type, value) is not None
-
-
-def get_scope_type(type: NotificationSettingTypes) -> NotificationScopeType:
-    """ In which scope (proj or org) can a user set more specific settings?"""
-    if type in [NotificationSettingTypes.DEPLOY]:
-        return NotificationScopeType.ORGANIZATION
-
-    if type in [NotificationSettingTypes.WORKFLOW, NotificationSettingTypes.ISSUE_ALERTS]:
-        return NotificationScopeType.PROJECT
-
-    raise Exception("type must be issue_alert, deploy, or workflow")
-
-
-def get_scope(
-    user_id: int, project: Optional[Any] = None, organization: Optional[Any] = None
-) -> Tuple[NotificationScopeType, int]:
-    """
-    Figure out the scope from parameters and return it as a tuple.
-    TODO(mgaeta): Make sure user_id is in the project or organization.
-    """
-
-    if project:
-        return NotificationScopeType.PROJECT, project.id
-
-    if organization:
-        return NotificationScopeType.ORGANIZATION, organization.id
-
-    if user_id:
-        return NotificationScopeType.USER, user_id
-
-    raise Exception("scope must be either user, organization, or project")
-
-
-def get_target_id(user: Optional[Any] = None, team: Optional[Any] = None) -> int:
-    """ :returns the actor ID from a User or Team. """
-    if user:
-        return int(user.actor_id)
-    if team:
-        return int(team.actor_id)
-
-    raise Exception("target must be either a user or a team")
+    if isinstance(recipient, Actor) and recipient.is_team:
+        return True
+    return isinstance(recipient, Team)

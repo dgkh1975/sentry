@@ -1,31 +1,36 @@
+from __future__ import annotations
+
 import itertools
-import pytest
+from collections.abc import Iterator
 from dataclasses import dataclass
-from typing import Iterator, Tuple
+from datetime import timedelta
+from typing import Any, Generic
+
+import pytest
 
 from sentry.utils.kvstore.abstract import K, KVStorage, V
 
 
 @dataclass
-class Properties:
+class Properties(Generic[K, V]):
     store: KVStorage[K, V]
     keys: Iterator[K]
     values: Iterator[V]
 
     @property
-    def items(self) -> Iterator[Tuple[K, V]]:
+    def items(self) -> Iterator[tuple[K, V]]:
         return zip(self.keys, self.values)
 
 
-@pytest.fixture(params=["bigtable", "cache/default", "memory"])
-def properties(request) -> Properties:
+@pytest.fixture(params=["bigtable", "cache/default", "memory", "memory+cachewrapper", "redis"])
+def properties(request: pytest.FixtureRequest) -> Properties[Any, Any]:
     if request.param == "bigtable":
-        from tests.sentry.utils.kvstore.test_bigtable import create_store, get_credentials
+        from tests.sentry.utils.kvstore.test_bigtable import create_store
 
         return Properties(
-            create_store(request, get_credentials()),
+            create_store(request),
             keys=(f"{i}" for i in itertools.count()),
-            values=(f"{i}".encode("utf-8") for i in itertools.count()),
+            values=(f"{i}".encode() for i in itertools.count()),
         )
     elif request.param.startswith("cache/"):
         from sentry.utils.kvstore.cache import CacheKVStorage
@@ -37,7 +42,7 @@ def properties(request) -> Properties:
         if backend_label == "default":
             from sentry.cache import default_cache as cache
         else:
-            raise ValueError("unknown cache backend label")
+            raise AssertionError("unknown cache backend label")
 
         return Properties(
             CacheKVStorage(cache),
@@ -52,21 +57,45 @@ def properties(request) -> Properties:
             keys=itertools.count(),
             values=itertools.count(),
         )
+    elif request.param == "redis":
+        from redis import Redis
+
+        from sentry.utils.kvstore.redis import RedisKVStorage
+
+        return Properties(
+            RedisKVStorage(Redis(db=6)),
+            keys=(f"kvstore/{i}" for i in itertools.count()),
+            values=(f"{i}".encode() for i in itertools.count()),
+        )
+    elif request.param == "memory+cachewrapper":
+        from sentry.utils.kvstore.cache import CacheKeyWrapper
+        from sentry.utils.kvstore.memory import MemoryKVStorage
+
+        return Properties(
+            CacheKeyWrapper(MemoryKVStorage()),
+            keys=map(str, itertools.count()),
+            values=itertools.count(),
+        )
     else:
-        raise ValueError("unknown kvstore label")
+        raise AssertionError("unknown kvstore label")
 
 
-def test_single_key_operations(properties: Properties) -> None:
+def test_single_key_operations(properties: Properties[Any, Any]) -> None:
     store = properties.store
     key, value = next(properties.keys), next(properties.values)
 
     # Test setting a key with no prior value.
-    store.set(key, value)
+    store.set(key, value, ttl=timedelta(hours=1))
     assert store.get(key) == value
 
     # Test overwriting a key with a prior value.
     new_value = next(properties.values)
-    store.set(key, new_value)
+    store.set(key, new_value, ttl=timedelta(hours=1))
+    assert store.get(key) == new_value
+
+    # Test overwriting a key with a new TTL.
+    new_value = next(properties.values)
+    store.set(key, new_value, ttl=timedelta(seconds=30))
     assert store.get(key) == new_value
 
     # Test deleting an existing key.
@@ -81,12 +110,12 @@ def test_single_key_operations(properties: Properties) -> None:
     store.delete(missing_key)
 
 
-def test_multiple_key_operations(properties: Properties) -> None:
+def test_multiple_key_operations(properties: Properties[Any, Any]) -> None:
     store = properties.store
 
     items = dict(itertools.islice(properties.items, 10))
     for key, value in items.items():
-        store.set(key, value)
+        store.set(key, value, ttl=timedelta(hours=1))
 
     missing_keys = set(itertools.islice(properties.keys, 5))
 

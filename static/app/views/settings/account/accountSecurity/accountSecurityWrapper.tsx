@@ -1,0 +1,152 @@
+import {useCallback} from 'react';
+import {Outlet, useOutletContext} from 'react-router';
+import {useMutation, useQuery} from '@tanstack/react-query';
+import {useStore} from 'zustand';
+
+import {toast} from '@sentry/scraps/toast';
+
+import {LoadingError} from 'sentry/components/loadingError';
+import {LoadingIndicator} from 'sentry/components/loadingIndicator';
+import {t} from 'sentry/locale';
+import {ConfigStore} from 'sentry/stores/configStore';
+import type {Authenticator} from 'sentry/types/auth';
+import type {OrganizationSummary} from 'sentry/types/organization';
+import type {UserEmail} from 'sentry/types/user';
+import {apiOptions} from 'sentry/utils/api/apiOptions';
+import {getApiUrl} from 'sentry/utils/api/getApiUrl';
+import {fetchMutation} from 'sentry/utils/queryClient';
+import {useParams} from 'sentry/utils/useParams';
+
+export default function AccountSecurityWrapper() {
+  const {authId} = useParams<{authId?: string}>();
+  const links = useStore(ConfigStore, state => state.links);
+
+  const orgRequest = useQuery(
+    apiOptions.as<OrganizationSummary[]>()('/organizations/', {
+      // Organizations span every region, so list them from the control silo
+      host: links.sentryUrl,
+      staleTime: 0,
+    })
+  );
+  const emailsRequest = useQuery(
+    apiOptions.as<UserEmail[]>()('/users/$userId/emails/', {
+      path: {userId: 'me'},
+      staleTime: 0,
+    })
+  );
+  const authenticatorsRequest = useQuery(
+    apiOptions.as<Authenticator[]>()('/users/$userId/authenticators/', {
+      path: {userId: 'me'},
+      staleTime: 0,
+    })
+  );
+
+  const {refetch: refetchOrganizations} = orgRequest;
+  const {refetch: refetchEmails} = emailsRequest;
+  const {refetch: refetchAuthenticators} = authenticatorsRequest;
+  const handleRefresh = useCallback(() => {
+    refetchOrganizations();
+    refetchAuthenticators();
+    refetchEmails();
+  }, [refetchOrganizations, refetchAuthenticators, refetchEmails]);
+
+  const disableAuthenticatorMutation = useMutation({
+    mutationFn: async (auth: Authenticator) => {
+      if (!auth?.authId) {
+        return;
+      }
+
+      await fetchMutation({
+        url: getApiUrl('/users/$userId/authenticators/$authId/', {
+          path: {userId: 'me', authId: auth.authId},
+        }),
+        method: 'DELETE',
+      });
+    },
+    onSuccess: () => {
+      handleRefresh();
+    },
+    onError: (_, auth) => {
+      toast.error(t('Error disabling %s', auth.name));
+    },
+  });
+
+  const regenerateBackupCodesMutation = useMutation({
+    mutationFn: async () => {
+      if (!authId) {
+        return;
+      }
+
+      await fetchMutation({
+        url: getApiUrl('/users/$userId/authenticators/$authId/', {
+          path: {userId: 'me', authId},
+        }),
+        method: 'PUT',
+      });
+    },
+    onSuccess: () => {
+      handleRefresh();
+    },
+    onError: () => {
+      toast.error(t('Error regenerating backup codes'));
+    },
+  });
+
+  if (
+    orgRequest.isPending ||
+    emailsRequest.isPending ||
+    authenticatorsRequest.isPending ||
+    disableAuthenticatorMutation.isPending ||
+    regenerateBackupCodesMutation.isPending
+  ) {
+    return <LoadingIndicator />;
+  }
+
+  if (authenticatorsRequest.isError || emailsRequest.isError || orgRequest.isError) {
+    return <LoadingError onRetry={handleRefresh} />;
+  }
+
+  const authenticators = authenticatorsRequest.data;
+  const emails = emailsRequest.data;
+  const organizations = orgRequest.data;
+
+  const enrolled =
+    authenticators.filter(auth => auth.isEnrolled && !auth.isBackupInterface) || [];
+  const countEnrolled = enrolled.length;
+  const orgsRequire2fa = organizations.filter(org => org.require2FA) || [];
+  const deleteDisabled = orgsRequire2fa.length > 0 && countEnrolled === 1;
+  // Enrollment requires the primary address specifically, not any verified address
+  const hasVerifiedPrimaryEmail = emails.some(
+    ({isPrimary, isVerified}) => isPrimary && isVerified
+  );
+
+  return (
+    <Outlet
+      context={{
+        authenticators,
+        countEnrolled,
+        deleteDisabled,
+        handleRefresh,
+        hasVerifiedPrimaryEmail,
+        onDisable: disableAuthenticatorMutation.mutate,
+        onRegenerateBackupCodes: regenerateBackupCodesMutation.mutate,
+        orgsRequire2fa,
+      }}
+    />
+  );
+}
+
+type OutletContext = {
+  authenticators: Authenticator[] | null;
+  countEnrolled: number;
+  deleteDisabled: boolean;
+  handleRefresh: () => void;
+  hasVerifiedPrimaryEmail: boolean;
+  onDisable: (auth: Authenticator) => void;
+  onRegenerateBackupCodes: () => void;
+  orgsRequire2fa: OrganizationSummary[];
+};
+
+export function useAccountSecurityContext(): OutletContext {
+  return useOutletContext<OutletContext>();
+}

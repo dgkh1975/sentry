@@ -1,0 +1,112 @@
+import {useMemo} from 'react';
+import styled from '@emotion/styled';
+import {IconAdd} from '@sentry/icons/add';
+
+import {Alert} from '@sentry/scraps/alert';
+import {Container, Stack} from '@sentry/scraps/layout';
+import type {SelectValue} from '@sentry/scraps/select';
+
+import {ConditionBadge} from 'sentry/components/workflowEngine/ui/conditionBadge';
+import {PurpleTextButton} from 'sentry/components/workflowEngine/ui/purpleTextButton';
+import {t, tct} from 'sentry/locale';
+import {
+  DataConditionGroupLogicType,
+  DataConditionHandlerGroupType,
+} from 'sentry/types/workflowEngine/dataConditions';
+import {findConflictingConditions} from 'sentry/views/automations/hooks/utils';
+
+import {TRIGGER_MATCH_OPTIONS} from './triggers/constants';
+import {ActionFilterBlock} from './actionFilterBlock';
+import {AutomationBuilderConflictContext} from './automationBuilderConflictContext';
+import {useAutomationBuilderContext} from './automationBuilderContext';
+import {useAutomationBuilderErrorContext} from './automationBuilderErrorContext';
+import {DataConditionNodeList} from './dataConditionNodeList';
+import {EmbeddedSelectField, Step, StepLead} from './stepComponents';
+
+export function AutomationBuilder() {
+  const {state, actions, showTriggerLogicTypeSelector} = useAutomationBuilderContext();
+  const {mutationErrors} = useAutomationBuilderErrorContext();
+
+  const conflictData = useMemo(() => {
+    return findConflictingConditions(state.triggers, state.actionFilters);
+  }, [state]);
+
+  return (
+    <AutomationBuilderConflictContext.Provider value={conflictData}>
+      <Stack gap="md">
+        <Step>
+          <StepLead>
+            {tct('[when:When] [selector] of the following occur', {
+              when: <ConditionBadge />,
+              selector: showTriggerLogicTypeSelector ? (
+                <Container width="80px">
+                  <EmbeddedSelectField
+                    styles={{
+                      control: (provided: any) => ({
+                        ...provided,
+                        minHeight: '21px',
+                        height: '21px',
+                      }),
+                    }}
+                    searchable={false}
+                    name={`${state.triggers.id}.logicType`}
+                    value={
+                      // We do not expose ANY as a valid option, but it is
+                      state.triggers.logicType === DataConditionGroupLogicType.ANY
+                        ? DataConditionGroupLogicType.ANY_SHORT_CIRCUIT
+                        : state.triggers.logicType
+                    }
+                    onChange={(option: SelectValue<DataConditionGroupLogicType>) =>
+                      actions.updateWhenLogicType(option.value)
+                    }
+                    options={TRIGGER_MATCH_OPTIONS}
+                    size="xs"
+                  />
+                </Container>
+              ) : (
+                <strong>{t('any')}</strong>
+              ),
+            })}
+          </StepLead>
+        </Step>
+        <DataConditionNodeList
+          handlerGroup={DataConditionHandlerGroupType.WORKFLOW_TRIGGER}
+          label={t('Add trigger')}
+          placeholder={t('Select a trigger...')}
+          conditions={state.triggers.conditions}
+          groupId={state.triggers.id}
+          onAddRow={type => actions.addWhenCondition(type)}
+          onDeleteRow={index => actions.removeWhenCondition(index)}
+          updateCondition={(id, comparison) =>
+            actions.updateWhenCondition(id, comparison)
+          }
+        />
+        {(mutationErrors as any)?.actionFilters?.all && (
+          <StyledAlert variant="danger">
+            {(mutationErrors as any).actionFilters.all}
+          </StyledAlert>
+        )}
+        {state.actionFilters.map(actionFilter => (
+          <ActionFilterBlock
+            key={`actionFilters.${actionFilter.id}`}
+            actionFilter={actionFilter}
+          />
+        ))}
+        <span>
+          <PurpleTextButton
+            variant="transparent"
+            icon={<IconAdd />}
+            size="xs"
+            onClick={() => actions.addIf()}
+          >
+            {t('If/Then Block')}
+          </PurpleTextButton>
+        </span>
+      </Stack>
+    </AutomationBuilderConflictContext.Provider>
+  );
+}
+
+const StyledAlert = styled(Alert)`
+  margin-top: ${p => p.theme.space.md};
+`;

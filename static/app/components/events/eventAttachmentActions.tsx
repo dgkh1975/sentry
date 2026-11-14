@@ -1,0 +1,101 @@
+import {IconDelete} from '@sentry/icons/delete';
+import {IconDownload} from '@sentry/icons/download';
+import {IconShow} from '@sentry/icons/show';
+
+import {Button, LinkButton} from '@sentry/scraps/button';
+import {Confirm} from '@sentry/scraps/confirm';
+import {Grid} from '@sentry/scraps/layout';
+
+import {useRole} from 'sentry/components/acl/useRole';
+import {t} from 'sentry/locale';
+import type {IssueAttachment} from 'sentry/types/group';
+import {resolveHostname} from 'sentry/utils/api/resolveHostname';
+import {useOrganization} from 'sentry/utils/useOrganization';
+
+import {
+  hasInlineAttachmentRenderer,
+  isAttachmentTooLargeForPreview,
+} from './attachmentViewers/previewAttachmentTypes';
+
+type Props = {
+  attachment: IssueAttachment;
+  onDelete: () => void;
+  projectSlug: string;
+  onPreviewClick?: () => void;
+  previewIsOpen?: boolean;
+  withPreviewButton?: boolean;
+};
+
+export function EventAttachmentActions({
+  attachment,
+  projectSlug,
+  withPreviewButton,
+  previewIsOpen,
+  onPreviewClick,
+  onDelete,
+}: Props) {
+  const organization = useOrganization();
+  const {hasRole: hasAttachmentRole} = useRole({role: 'attachmentsRole'});
+  const url = `/api/0/projects/${organization.slug}/${projectSlug}/events/${attachment.event_id}/attachments/${attachment.id}/`;
+  const hasPreview = hasInlineAttachmentRenderer(attachment);
+  const isTooLarge = isAttachmentTooLargeForPreview(attachment);
+  const canPreview = hasPreview && !isTooLarge;
+
+  return (
+    <Grid flow="column" align="center" gap="md">
+      {withPreviewButton && (
+        <Button
+          size="xs"
+          disabled={!hasAttachmentRole || !canPreview}
+          variant={previewIsOpen ? 'primary' : 'secondary'}
+          icon={<IconShow />}
+          onClick={onPreviewClick}
+          tooltipProps={{
+            title: hasAttachmentRole
+              ? canPreview
+                ? undefined
+                : hasPreview
+                  ? isTooLarge
+                    ? t('This file is too large to preview')
+                    : t('This attachment cannot be previewed')
+                  : t('This attachment cannot be previewed')
+              : t('Insufficient permissions to preview attachments'),
+          }}
+        >
+          {t('Preview')}
+        </Button>
+      )}
+      <LinkButton
+        size="xs"
+        icon={<IconDownload />}
+        href={hasAttachmentRole ? resolveHostname(`${url}?download=1`) : ''}
+        disabled={!hasAttachmentRole}
+        tooltipProps={{
+          title: hasAttachmentRole
+            ? t('Download')
+            : t('Insufficient permissions to download attachments'),
+        }}
+        aria-label={t('Download')}
+      />
+      <Confirm
+        confirmText={t('Delete')}
+        message={t('Are you sure you wish to delete this file?')}
+        priority="danger"
+        onConfirm={onDelete}
+        disabled={!hasAttachmentRole}
+      >
+        <Button
+          size="xs"
+          icon={<IconDelete />}
+          aria-label={t('Delete')}
+          disabled={!hasAttachmentRole}
+          tooltipProps={{
+            title: hasAttachmentRole
+              ? t('Delete')
+              : t('Insufficient permissions to delete attachments'),
+          }}
+        />
+      </Confirm>
+    </Grid>
+  );
+}

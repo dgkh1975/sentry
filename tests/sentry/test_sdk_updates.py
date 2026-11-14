@@ -1,25 +1,29 @@
 import pytest
 
-from sentry.sdk_updates import SdkSetupState, SdkIndexState, get_suggested_updates
-
+from sentry.sdk_updates import (
+    SdkIndexState,
+    SdkSetupState,
+    SdkUpdateSuggestionResponse,
+    get_suggested_updates,
+)
 
 PYTHON_INDEX_STATE = SdkIndexState(sdk_versions={"sentry.python": "0.9.1"})
 
 DOTNET_INDEX_STATE = SdkIndexState(sdk_versions={"sentry.dotnet": "1.2.0"})
 
 
-def test_too_old_django():
+def test_too_old_django() -> None:
     setup = SdkSetupState(
         sdk_name="sentry.python", sdk_version="0.9.1", integrations=[], modules={"django": "1.3"}
     )
     assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == []
 
 
-def test_too_old_sdk():
+def test_too_old_sdk() -> None:
     setup = SdkSetupState(
         sdk_name="sentry.python", sdk_version="0.1.0", integrations=[], modules={"django": "1.8"}
     )
-    assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == [
+    expected: list[SdkUpdateSuggestionResponse] = [
         {
             "enables": [
                 {
@@ -35,9 +39,17 @@ def test_too_old_sdk():
             "type": "updateSdk",
         }
     ]
+    assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == expected
 
 
-def test_ignore_patch_version():
+def test_ignore_patch_version() -> None:
+    setup = SdkSetupState(
+        sdk_name="sentry.python", sdk_version="0.9.0", integrations=[], modules={}
+    )
+    assert len(list(get_suggested_updates(setup, PYTHON_INDEX_STATE))) == 0
+
+
+def test_ignore_patch_version_explicit() -> None:
     setup = SdkSetupState(
         sdk_name="sentry.python", sdk_version="0.9.0", integrations=[], modules={}
     )
@@ -46,11 +58,11 @@ def test_ignore_patch_version():
     )
 
 
-def test_enable_django_integration():
+def test_enable_django_integration() -> None:
     setup = SdkSetupState(
         sdk_name="sentry.python", sdk_version="0.9.1", integrations=[], modules={"django": "1.8"}
     )
-    assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == [
+    expected: list[SdkUpdateSuggestionResponse] = [
         {
             "type": "enableIntegration",
             "enables": [],
@@ -58,13 +70,14 @@ def test_enable_django_integration():
             "integrationUrl": "https://docs.sentry.io/platforms/python/django/",
         }
     ]
+    assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == expected
 
 
-def test_update_sdk():
+def test_update_sdk() -> None:
     setup = SdkSetupState(
         sdk_name="sentry.python", sdk_version="0.1.0", integrations=[], modules={}
     )
-    assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == [
+    expected: list[SdkUpdateSuggestionResponse] = [
         {
             "enables": [],
             "newSdkVersion": "0.9.1",
@@ -73,9 +86,10 @@ def test_update_sdk():
             "type": "updateSdk",
         }
     ]
+    assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == expected
 
 
-def test_enable_two_integrations():
+def test_enable_two_integrations() -> None:
     setup = SdkSetupState(
         sdk_name="sentry.python",
         sdk_version="0.1.0",
@@ -83,7 +97,7 @@ def test_enable_two_integrations():
         modules={"django": "1.8.0", "flask": "1.0.0"},
     )
 
-    assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == [
+    expected: list[SdkUpdateSuggestionResponse] = [
         {
             "enables": [
                 {
@@ -105,6 +119,7 @@ def test_enable_two_integrations():
             "type": "updateSdk",
         }
     ]
+    assert list(get_suggested_updates(setup, PYTHON_INDEX_STATE)) == expected
 
 
 @pytest.fixture(
@@ -115,11 +130,11 @@ def test_enable_two_integrations():
         "sentry.dotnet",
     ]
 )
-def some_dotnet_sdk(request):
+def some_dotnet_sdk(request: pytest.FixtureRequest) -> str:
     return request.param
 
 
-def test_add_aspnetcore_sdk(some_dotnet_sdk):
+def test_add_aspnetcore_sdk(some_dotnet_sdk: str) -> None:
     setup = SdkSetupState(
         sdk_name=some_dotnet_sdk,
         sdk_version="1.2.0",
@@ -146,7 +161,7 @@ def test_add_aspnetcore_sdk(some_dotnet_sdk):
         ]
 
 
-def test_add_serilog_sdk(some_dotnet_sdk):
+def test_add_serilog_sdk(some_dotnet_sdk: str) -> None:
     setup = SdkSetupState(
         sdk_name=some_dotnet_sdk,
         sdk_version="1.2.0",
@@ -168,7 +183,7 @@ def test_add_serilog_sdk(some_dotnet_sdk):
         ]
 
 
-def test_add_no_dotnet_sdk(some_dotnet_sdk):
+def test_add_no_dotnet_sdk(some_dotnet_sdk: str) -> None:
     setup = SdkSetupState(
         sdk_name=some_dotnet_sdk,
         sdk_version="1.2.0",
@@ -185,7 +200,7 @@ def test_add_no_dotnet_sdk(some_dotnet_sdk):
     assert suggestions == []
 
 
-def test_more_specific_dotnet_sdk(some_dotnet_sdk):
+def test_more_specific_dotnet_sdk(some_dotnet_sdk: str) -> None:
     setup = SdkSetupState(
         sdk_name=some_dotnet_sdk,
         sdk_version="1.2.0",

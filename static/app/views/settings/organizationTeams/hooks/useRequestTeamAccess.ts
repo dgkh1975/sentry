@@ -1,0 +1,35 @@
+import {useMutation} from '@tanstack/react-query';
+
+import {toast} from '@sentry/scraps/toast';
+
+import {joinTeamPromise} from 'sentry/actionCreators/teams';
+import {t} from 'sentry/locale';
+import type {Organization, Team} from 'sentry/types/organization';
+import {useApi} from 'sentry/utils/useApi';
+interface UseRequestTeamAccessOptions {
+  organization: Organization;
+  team: Team;
+}
+
+/**
+ * Hook to request access to a team with closed membership.
+ * Updates TeamStore with isPending: true after successful request.
+ */
+export function useRequestTeamAccess({organization, team}: UseRequestTeamAccessOptions) {
+  const api = useApi({persistInFlight: true});
+
+  return useMutation({
+    mutationFn: () => {
+      return joinTeamPromise(api, {
+        orgId: organization.slug,
+        teamId: team.slug,
+      });
+    },
+    onSuccess: () => {
+      toast.success(t('You have requested access to %s', `#${team.slug}`));
+    },
+    onError: () => {
+      toast.error(t('Unable to request access to %s', `#${team.slug}`));
+    },
+  });
+}

@@ -1,1 +1,18 @@
-<svg id="bef6bfb6-89f3-49ef-ae40-167eb3f795db" data-name="Logos" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 80 80"><defs><linearGradient id="a4660f13-7e5e-4d12-a2a6-953325d5a471" x1="39.5" y1="-646" x2="39.5" y2="-726" gradientTransform="matrix(1, 0, 0, -1, 0, -646)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#606acb"/><stop offset="1" stop-color="#2a349a"/></linearGradient><linearGradient id="f32a8ab1-5f49-42db-b3e5-9d6fe1bc8929" x1="26.97" y1="-707.4" x2="26.97" y2="-664.4" gradientTransform="matrix(1, 0, 0, -1, 0, -646)" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#fff" stop-opacity="0.85"/><stop offset="1" stop-color="#fff"/></linearGradient><linearGradient id="a37d695e-d635-4c9a-ae45-05d27bb2368a" x1="31.19" y1="-707.4" x2="31.19" y2="-664.4" xlink:href="#f32a8ab1-5f49-42db-b3e5-9d6fe1bc8929"/><linearGradient id="aba6bdec-3832-44c0-a2c7-76875c62fee1" x1="35.21" y1="-707.4" x2="35.21" y2="-664.4" xlink:href="#f32a8ab1-5f49-42db-b3e5-9d6fe1bc8929"/><linearGradient id="f158b496-11fa-4ee5-af3b-2c188d915dc1" x1="41.98" y1="-707.4" x2="41.98" y2="-664.4" xlink:href="#f32a8ab1-5f49-42db-b3e5-9d6fe1bc8929"/></defs><rect x="-0.5" width="80" height="80" rx="14.4" style="fill:url(#a4660f13-7e5e-4d12-a2a6-953325d5a471)"/><path d="M18.17,43.53l17.6,17.6A21.53,21.53,0,0,1,18.17,43.53Z" style="fill:url(#f32a8ab1-5f49-42db-b3e5-9d6fe1bc8929)"/><path d="M17.9,38.75,40.55,61.4a21.29,21.29,0,0,0,3.93-.58l-26-26A21.16,21.16,0,0,0,17.9,38.75Z" style="fill:url(#a37d695e-d635-4c9a-ae45-05d27bb2368a)"/><path d="M19.6,31.44,47.86,59.7a22.54,22.54,0,0,0,3-1.56L21.15,28.48A21.34,21.34,0,0,0,19.6,31.44Z" style="fill:url(#aba6bdec-3832-44c0-a2c7-76875c62fee1)"/><path d="M23.07,25.89A21.51,21.51,0,1,1,53.41,56.23Z" style="fill:url(#f158b496-11fa-4ee5-af3b-2c188d915dc1)"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 100 100">
+  <defs>
+    <linearGradient id="linear-logo-bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2E2F32" />
+      <stop offset="1" stop-color="#111214" />
+    </linearGradient>
+    <linearGradient id="linear-logo-mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F7F7F7" />
+      <stop offset="1" stop-color="#E2E2E2" />
+    </linearGradient>
+  </defs>
+  <rect width="100" height="100" rx="24" fill="url(#linear-logo-bg)" />
+  <path
+    fill="url(#linear-logo-mark)"
+    transform="translate(19.5 19) scale(0.61)"
+    d="M1.22541 61.5228c-.2225-.9485.90748-1.5459 1.59638-.857L39.3342 97.1782c.6889.6889.0915 1.8189-.857 1.5964C20.0515 94.4522 5.54779 79.9485 1.22541 61.5228ZM.00189135 46.8891c-.01764375.2833.08887215.5599.28957165.7606L52.3503 99.7085c.2007.2007.4773.3075.7606.2896 2.3692-.1476 4.6938-.46 6.9624-.9259.7645-.157 1.0301-1.0963.4782-1.6481L2.57595 39.4485c-.55186-.5519-1.49117-.2863-1.648174.4782-.465915 2.2686-.77832 4.5932-.92588465 6.9624ZM4.21093 29.7054c-.16649.3738-.08169.8106.20765 1.1l64.77602 64.776c.2894.2894.7262.3742 1.1.2077 1.7861-.7956 3.5171-1.6927 5.1855-2.684.5521-.328.6373-1.0867.1832-1.5407L8.43566 24.3367c-.45409-.4541-1.21271-.3689-1.54074.1832-.99132 1.6684-1.88843 3.3994-2.68399 5.1855ZM12.6587 18.074c-.3701-.3701-.393-.9637-.0443-1.3541C21.7795 6.45931 35.1114 0 49.9519 0 77.5927 0 100 22.4073 100 50.0481c0 14.8405-6.4593 28.1724-16.7199 37.3375-.3903.3487-.984.3258-1.3542-.0443L12.6587 18.074Z"
+  />
+</svg>

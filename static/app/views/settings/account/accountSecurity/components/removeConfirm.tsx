@@ -1,0 +1,17 @@
+import {Confirm} from '@sentry/scraps/confirm';
+
+import {t} from 'sentry/locale';
+
+type Props = React.ComponentProps<typeof Confirm>;
+
+export function RemoveConfirm(props: Props) {
+  return (
+    <Confirm
+      {...props}
+      header={t('Do you want to remove this method?')}
+      message={t(
+        'Removing the last authentication method will disable two-factor authentication completely.'
+      )}
+    />
+  );
+}

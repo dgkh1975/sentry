@@ -1,10 +1,27 @@
 __all__ = ("User",)
 
 
+from collections.abc import Mapping
+from typing import Annotated, Any, Self, TypedDict
+
+from sentry.apidocs.descriptions import ApiDescription
 from sentry.interfaces.base import Interface
-from sentry.utils.json import prune_empty_keys
 from sentry.interfaces.geo import Geo
+from sentry.utils.json import prune_empty_keys
 from sentry.web.helpers import render_to_string
+
+
+class EventUserApiContext(TypedDict, total=False):
+    id: Annotated[str | None, ApiDescription("ID the SDK sent for the user")]
+    email: Annotated[str | None, ApiDescription("Email address of the user")]
+    username: Annotated[str | None, ApiDescription("Username of the user")]
+    ip_address: Annotated[str | None, ApiDescription("IP address of the user")]
+    name: Annotated[str | None, ApiDescription("Name of the user")]
+    geo: Annotated[
+        dict[str, str] | None,
+        ApiDescription("Location of the user, with keys such as country_code, city and region"),
+    ]
+    data: Annotated[dict[str, Any] | None, ApiDescription("Extra data the SDK sent about the user")]
 
 
 class User(Interface):
@@ -29,15 +46,16 @@ class User(Interface):
     display_score = 2020
 
     @classmethod
-    def to_python(cls, data):
+    def to_python(cls, data: dict[str, Any]) -> Self | None:
         data = data.copy()
         for key in ("id", "email", "username", "ip_address", "name", "geo", "data"):
             data.setdefault(key, None)
         if data["geo"] is not None:
             data["geo"] = Geo.to_python(data["geo"])
-        return cls(**data)
 
-    def to_json(self):
+        return super().to_python(data)
+
+    def to_json(self) -> dict[str, Any]:
         return prune_empty_keys(
             {
                 "id": self.id,
@@ -50,17 +68,25 @@ class User(Interface):
             }
         )
 
-    def get_api_context(self, is_public=False, platform=None):
+    def get_api_context(
+        self, is_public: bool = False, platform: str | None = None
+    ) -> EventUserApiContext:
         return {
             "id": self.id,
             "email": self.email,
             "username": self.username,
             "ip_address": self.ip_address,
             "name": self.name,
+            "geo": self.geo.to_json() if self.geo is not None else None,
             "data": self.data,
         }
 
-    def get_api_meta(self, meta, is_public=False, platform=None):
+    def get_api_meta(
+        self,
+        meta: Mapping[str, Any],
+        is_public: bool = False,
+        platform: str | None = None,
+    ) -> Mapping[str, Any] | None:
         return {
             "": meta.get(""),
             "id": meta.get("id"),
@@ -68,16 +94,17 @@ class User(Interface):
             "username": meta.get("username"),
             "ip_address": meta.get("ip_address"),
             "name": meta.get("name"),
+            "geo": meta.get("geo"),
             "data": meta.get("data"),
         }
 
-    def get_display_name(self):
+    def get_display_name(self) -> str | None:
         return self.email or self.username
 
-    def get_label(self):
+    def get_label(self) -> str | None:
         return self.name or self.email or self.username or self.id or self.ip_address
 
-    def to_email_html(self, event, **kwargs):
+    def to_email_html(self, event: Any, **kwargs: Any) -> str:
         context = {
             "user_id": self.id,
             "user_email": self.email,

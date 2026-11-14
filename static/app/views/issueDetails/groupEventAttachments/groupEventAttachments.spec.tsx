@@ -1,0 +1,342 @@
+import {ConfigFixture} from 'sentry-fixture/config';
+import {EnvironmentsFixture} from 'sentry-fixture/environments';
+import {EventAttachmentFixture} from 'sentry-fixture/eventAttachment';
+import {GroupFixture} from 'sentry-fixture/group';
+import {OrganizationFixture} from 'sentry-fixture/organization';
+import {ProjectFixture} from 'sentry-fixture/project';
+import {TagsFixture} from 'sentry-fixture/tags';
+import {UserFixture} from 'sentry-fixture/user';
+
+import {
+  render,
+  renderGlobalModal,
+  screen,
+  userEvent,
+  waitFor,
+  within,
+  type RouterConfig,
+} from 'sentry-test/reactTestingLibrary';
+
+import {ConfigStore} from 'sentry/stores/configStore';
+import {GroupStore} from 'sentry/stores/groupStore';
+import {ProjectsStore} from 'sentry/stores/projectsStore';
+import type {Project} from 'sentry/types/project';
+import {localStorageWrapper} from 'sentry/utils/localStorage';
+
+import {GroupEventAttachments} from './groupEventAttachments';
+
+describe('GroupEventAttachments', () => {
+  const groupId = 'group-id';
+  const group = GroupFixture({id: groupId});
+  const organization = OrganizationFixture({
+    features: ['event-attachments'],
+    orgRole: 'member',
+    attachmentsRole: 'member',
+  });
+  const initialRouterConfig: RouterConfig = {
+    location: {
+      pathname: `/organizations/${organization.slug}/issues/${groupId}/attachments/`,
+    },
+    route: '/organizations/:orgId/issues/:groupId/attachments/',
+  };
+  const screenshotRouterConfig: RouterConfig = {
+    location: {
+      pathname: `/organizations/${organization.slug}/issues/${groupId}/attachments/`,
+      query: {attachmentFilter: 'screenshot'},
+    },
+    route: '/organizations/:orgId/issues/:groupId/attachments/',
+  };
+  let project: Project;
+  let getAttachmentsMock: jest.Mock;
+
+  beforeEach(() => {
+    project = ProjectFixture({platform: 'apple-ios'});
+    localStorageWrapper.removeItem(`issue-details-attachments-default-tab-${project.id}`);
+    ProjectsStore.loadInitialData([project]);
+    GroupStore.init();
+
+    MockApiClient.addMockResponse({
+      url: `/organizations/${organization.slug}/environments/`,
+      body: EnvironmentsFixture(),
+    });
+    getAttachmentsMock = MockApiClient.addMockResponse({
+      url: `/organizations/org-slug/issues/${groupId}/attachments/`,
+      body: [EventAttachmentFixture()],
+    });
+    MockApiClient.addMockResponse({
+      url: `/organizations/${organization.slug}/issues/${group.id}/tags/`,
+      body: TagsFixture(),
+      method: 'GET',
+    });
+  });
+
+  afterEach(() => {
+    MockApiClient.clearMockResponses();
+  });
+
+  it('calls attachments api with screenshot filter', async () => {
+    render(<GroupEventAttachments project={project} group={group} />, {
+      organization,
+      initialRouterConfig: screenshotRouterConfig,
+    });
+    expect(screen.getByRole('radio', {name: 'Screenshots'})).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', {name: 'Screenshots'}));
+    expect(getAttachmentsMock).toHaveBeenCalledWith(
+      '/organizations/org-slug/issues/group-id/attachments/',
+      expect.objectContaining({
+        query: {
+          screenshot: '1',
+          environment: [],
+        },
+      })
+    );
+  });
+
+  it.each([
+    {label: 'Screenshots', filter: 'screenshot', filterQuery: {screenshot: '1'}},
+    {
+      label: 'Only Crash Reports',
+      filter: 'onlyCrash',
+      filterQuery: {types: ['event.minidump', 'event.applecrashreport']},
+    },
+  ])(
+    'restarts pagination when switching to $label',
+    async ({label, filter, filterQuery}) => {
+      const query = {
+        environment: 'production',
+        statsPeriod: '7d',
+        query: 'release:1.0',
+      };
+      const {router} = render(<GroupEventAttachments project={project} group={group} />, {
+        organization,
+        initialRouterConfig: {
+          ...initialRouterConfig,
+          location: {
+            pathname: `/organizations/${organization.slug}/issues/${groupId}/attachments/`,
+            query: {...query, attachmentFilter: 'all', cursor: '2:0:0'},
+          },
+        },
+      });
+
+      await waitFor(() => {
+        expect(getAttachmentsMock).toHaveBeenLastCalledWith(
+          '/organizations/org-slug/issues/group-id/attachments/',
+          expect.objectContaining({
+            query: {...query, environment: ['production'], cursor: '2:0:0'},
+          })
+        );
+      });
+      await userEvent.click(screen.getByRole('radio', {name: label}));
+
+      await waitFor(() => {
+        expect(getAttachmentsMock).toHaveBeenLastCalledWith(
+          '/organizations/org-slug/issues/group-id/attachments/',
+          expect.objectContaining({
+            query: {...query, environment: ['production'], ...filterQuery},
+          })
+        );
+      });
+      expect(router.location.query).toEqual({...query, attachmentFilter: filter});
+      expect(router.historyAction).toBe('REPLACE');
+    }
+  );
+
+  it('drops the cursor when picking a filter while none is set', async () => {
+    const {router} = render(<GroupEventAttachments project={project} group={group} />, {
+      organization,
+      initialRouterConfig: {
+        ...initialRouterConfig,
+        location: {
+          pathname: `/organizations/${organization.slug}/issues/${groupId}/attachments/`,
+          query: {cursor: '2:0:0', statsPeriod: '7d'},
+        },
+      },
+    });
+
+    await userEvent.click(await screen.findByRole('radio', {name: 'Screenshots'}));
+
+    await waitFor(() => {
+      expect(router.location.query).toEqual({
+        statsPeriod: '7d',
+        attachmentFilter: 'screenshot',
+      });
+    });
+  });
+
+  it('restores the previously used filter into the URL when none is set', async () => {
+    localStorageWrapper.setItem(
+      `issue-details-attachments-default-tab-${project.id}`,
+      JSON.stringify('screenshot')
+    );
+    const {router} = render(<GroupEventAttachments project={project} group={group} />, {
+      organization,
+      initialRouterConfig: {
+        ...initialRouterConfig,
+        location: {
+          pathname: `/organizations/${organization.slug}/issues/${groupId}/attachments/`,
+          query: {statsPeriod: '7d'},
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(router.location.query).toEqual({
+        statsPeriod: '7d',
+        attachmentFilter: 'screenshot',
+      });
+    });
+    expect(router.historyAction).toBe('REPLACE');
+  });
+
+  it('calls opens modal when clicking on panel body', async () => {
+    render(<GroupEventAttachments project={project} group={group} />, {
+      organization,
+      initialRouterConfig: screenshotRouterConfig,
+    });
+    renderGlobalModal();
+    await userEvent.click(await screen.findByTestId('screenshot-1'));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('links event id to event detail', async () => {
+    render(<GroupEventAttachments project={project} group={group} />, {
+      organization,
+      initialRouterConfig,
+    });
+    expect(await screen.findByRole('link', {name: '12345678'})).toHaveAttribute(
+      'href',
+      '/organizations/org-slug/issues/group-id/events/12345678901234567890123456789012/'
+    );
+  });
+
+  it('links to the download URL', async () => {
+    render(<GroupEventAttachments project={project} group={group} />, {
+      organization,
+      initialRouterConfig: screenshotRouterConfig,
+    });
+    await userEvent.click(await screen.findByLabelText('Actions'));
+    expect(
+      await screen.findByRole('menuitemradio', {name: 'Download'})
+    ).toBeInTheDocument();
+  });
+
+  it('displays error message when request fails', async () => {
+    MockApiClient.addMockResponse({
+      url: '/organizations/org-slug/issues/group-id/attachments/',
+      statusCode: 500,
+    });
+    render(<GroupEventAttachments project={project} group={group} />, {
+      organization,
+      initialRouterConfig,
+    });
+    expect(await screen.findByText(/error loading/i)).toBeInTheDocument();
+  });
+
+  it('can delete an attachment', async () => {
+    const deleteMock = MockApiClient.addMockResponse({
+      url: '/projects/org-slug/project-slug/events/12345678901234567890123456789012/attachments/1/',
+      method: 'DELETE',
+    });
+    render(<GroupEventAttachments project={project} group={group} />, {
+      organization,
+      initialRouterConfig,
+    });
+    renderGlobalModal();
+
+    expect(await screen.findByText('12345678')).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: 'Delete'})).toBeEnabled();
+    await userEvent.click(screen.getByRole('button', {name: 'Delete'}));
+
+    expect(
+      await screen.findByText('Are you sure you wish to delete this file?')
+    ).toBeInTheDocument();
+    await userEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', {name: 'Delete'})
+    );
+
+    expect(deleteMock).toHaveBeenCalled();
+    expect(screen.queryByText('12345678')).not.toBeInTheDocument();
+  });
+
+  it('filters by date/query on issue details', () => {
+    ConfigStore.loadInitialData(ConfigFixture({user: UserFixture()}));
+
+    render(<GroupEventAttachments project={project} group={group} />, {
+      initialRouterConfig: {
+        location: {
+          pathname: `/organizations/${organization.slug}/issues/${groupId}/attachments/`,
+          query: {
+            statsPeriod: '3d',
+            query: 'user.email:leander.rodrigues@sentry.io',
+            environment: ['staging'],
+          },
+        },
+        route: '/organizations/:orgId/issues/:groupId/attachments/',
+      },
+      organization,
+    });
+    expect(getAttachmentsMock).toHaveBeenCalledWith(
+      '/organizations/org-slug/issues/group-id/attachments/',
+      expect.objectContaining({
+        query: {
+          environment: ['staging'],
+          query: 'user.email:leander.rodrigues@sentry.io',
+          statsPeriod: '3d',
+        },
+      })
+    );
+  });
+
+  describe('attachments quota exceeded', () => {
+    const quotaOrganization = OrganizationFixture({
+      ...organization,
+      features: [...organization.features, 'attachments-quota-exceeded-notice'],
+    });
+    const quotaExceededGroup = GroupFixture({
+      id: groupId,
+      metadata: {attachments_quota_exceeded: true},
+    });
+    const quotaExceededMessage =
+      'Some attachments may be missing from this list because your attachment quota was exceeded at the time the event was ingested.';
+
+    it('warns that attachments may be missing', async () => {
+      render(<GroupEventAttachments project={project} group={quotaExceededGroup} />, {
+        organization: quotaOrganization,
+        initialRouterConfig,
+      });
+
+      expect(await screen.findByText('12345678')).toBeInTheDocument();
+      expect(screen.getByText(quotaExceededMessage, {exact: false})).toBeInTheDocument();
+      expect(
+        screen.getByRole('link', {name: 'View your attachment usage'})
+      ).toHaveAttribute(
+        'href',
+        `/settings/org-slug/stats/?dataCategory=attachments&project=${project.id}`
+      );
+    });
+
+    it('does not warn on the screenshots tab', async () => {
+      render(<GroupEventAttachments project={project} group={quotaExceededGroup} />, {
+        organization: quotaOrganization,
+        initialRouterConfig: screenshotRouterConfig,
+      });
+
+      expect(await screen.findByRole('img')).toBeInTheDocument();
+      expect(
+        screen.queryByText(quotaExceededMessage, {exact: false})
+      ).not.toBeInTheDocument();
+    });
+
+    it('does not warn without the feature flag', async () => {
+      render(<GroupEventAttachments project={project} group={quotaExceededGroup} />, {
+        organization,
+        initialRouterConfig,
+      });
+
+      expect(await screen.findByText('12345678')).toBeInTheDocument();
+      expect(
+        screen.queryByText(quotaExceededMessage, {exact: false})
+      ).not.toBeInTheDocument();
+    });
+  });
+});

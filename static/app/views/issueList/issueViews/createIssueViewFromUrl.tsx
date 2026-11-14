@@ -1,0 +1,33 @@
+import type {Query} from 'history';
+
+import {URL_PARAM} from 'sentry/components/pageFilters/constants';
+import {normalizeDateTimeParams} from 'sentry/components/pageFilters/parse';
+import {
+  decodeBoolean,
+  decodeInteger,
+  decodeList,
+  decodeScalar,
+} from 'sentry/utils/queryString';
+import {IssueSortOptions} from 'sentry/views/issueList/utils';
+
+import type {IssueViewParams} from './utils';
+
+export function createIssueViewFromUrl({query}: {query: Query}): IssueViewParams {
+  const normalizedTimeFilters = normalizeDateTimeParams(query);
+
+  return {
+    query: typeof query.query === 'string' ? query.query : '',
+    querySort:
+      typeof query.sort === 'string'
+        ? (query.sort as IssueSortOptions)
+        : IssueSortOptions.DATE,
+    projects: decodeList(query[URL_PARAM.PROJECT]).map(decodeInteger),
+    environments: decodeList(query[URL_PARAM.ENVIRONMENT]),
+    timeFilters: {
+      start: decodeScalar(normalizedTimeFilters.start) ?? null,
+      end: decodeScalar(normalizedTimeFilters.end) ?? null,
+      period: decodeScalar(normalizedTimeFilters.statsPeriod) ?? null,
+      utc: decodeBoolean(normalizedTimeFilters.utc) ?? null,
+    },
+  };
+}
